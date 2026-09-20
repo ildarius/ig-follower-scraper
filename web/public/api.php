@@ -1,9 +1,6 @@
 <?php
 /**
- * Localhost-guarded JSON endpoint. Same pattern as the Karkusha app's
- * tests/*.php helpers: the Linux sandbox cannot reach Laragon's MySQL on
- * port 3306, so database work is driven through a browser request to
- * http://127.0.0.1 instead.
+ * JSON endpoint protected by authentication and the per-role action allowlist.
  *
  * Actions:
  *   ?action=start&username=american_kratom_assoc&what=followers&limit=500
@@ -25,9 +22,8 @@ header('Cache-Control: no-store');
  *
  * What stood here was a comparison of REMOTE_ADDR against 127.0.0.1. That is
  * correct on the PC and wrong on a remote host, where REMOTE_ADDR is the
- * visitor's address and the check rejects everyone. Auth replaces it, and keeps
- * the original behaviour available as the 'localhost' provider so that nothing
- * changes on the PC.
+ * visitor's address and the check rejects everyone. Auth now defaults to the
+ * parent site's session; localhost access requires opting into that provider.
  *
  * The role check sits here, above the switch, rather than inside the individual
  * cases. An action added to the switch later is therefore denied to the
@@ -41,7 +37,7 @@ if ($authUser === null) {
     echo json_encode([
         'ok'    => false,
         'error' => 'Not signed in.',
-        'login' => 'login.php',
+        'login' => Auth::loginUrl(),
     ]);
     exit;
 }
@@ -62,6 +58,10 @@ function respond(array $payload, int $status = 200): never
     http_response_code($status);
     echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     exit;
+}
+
+if (!APP_CONFIGURED) {
+    respond(['ok' => false, 'error' => 'Application setup is incomplete: config.php is missing.'], 503);
 }
 
 $action = $requestedAction;

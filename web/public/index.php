@@ -21,6 +21,9 @@ $enrich = null;
 $staleWarning = null;
 
 try {
+    if (!APP_CONFIGURED) {
+        throw new RuntimeException('Application setup is incomplete: config.php is missing.');
+    }
     $scraper = new Scraper();
     $stats   = $scraper->stats();
     $latest  = $scraper->latestRunRow();
@@ -242,6 +245,7 @@ async function call(params) {
   const qs = new URLSearchParams(params).toString();
   const res = await fetch('api.php?' + qs, { headers: { 'Accept': 'application/json' } });
   const body = await res.json();
+  if (res.status === 401) window.location.assign(body.login || 'login.php');
   if (!body.ok) {
     throw new Error(body.error || 'Request failed');
   }

@@ -29,7 +29,21 @@ const CASES = [
     'builtin-demoted-mid-session',
     'basic-maps-username',
     'basic-unmapped-username',
-    'external-stub-denies',
+    'default-requires-parent-session',
+    'external-no-session',
+    'external-admin',
+    'external-marketer',
+    'external-unknown-role',
+    'external-legacy-session',
+    'external-allowlist-maps-email',
+    'external-allowlist-denies-unlisted',
+    'external-bad-mapped-role',
+    'external-mismatched-email',
+    'external-inactive-user',
+    'external-malformed-identity',
+    'external-forged-headers',
+    'external-invalid-cookie',
+    'external-wrong-session-name',
     'unknown-provider-throws',
     'acl-operator-actions',
     'acl-admin-actions',
@@ -45,16 +59,11 @@ if (!isset($argv[1])) {
     $failed = [];
     foreach (CASES as $name) {
         echo '== ' . $name . PHP_EOL;
-        $cmd = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($name) . ' 2>&1';
+        $cmd = escapeshellarg(PHP_BINARY) . ' -d display_errors=stderr -d log_errors=0 '
+            . escapeshellarg(__FILE__) . ' ' . escapeshellarg($name) . ' 2>&1';
         exec($cmd, $lines, $status);
         foreach ($lines as $line) {
-            // session warnings are an artefact of printing before session_start
-            // in a CLI process, and cannot happen in a real request because the
-            // guard runs before any output.
-            if (str_contains($line, 'session_') && str_contains($line, 'headers have already been sent')) {
-                continue;
-            }
-            if (trim($line) === '' || str_starts_with($line, 'Warning:') || str_starts_with($line, 'PHP Warning:')) {
+            if (trim($line) === '') {
                 continue;
             }
             echo $line . PHP_EOL;
@@ -76,6 +85,34 @@ if (!isset($argv[1])) {
 
 $case = $argv[1];
 $fails = 0;
+
+// Isolate tests from real login sessions and keep output behind session headers.
+$sessionDir = sys_get_temp_dir() . '/igfs-auth-' . bin2hex(random_bytes(8));
+mkdir($sessionDir, 0700);
+ini_set('session.save_path', $sessionDir);
+ob_start();
+register_shutdown_function(static function () use ($sessionDir): void {
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        session_abort();
+    }
+    foreach (glob($sessionDir . '/sess_*') as $file) {
+        unlink($file);
+    }
+    rmdir($sessionDir);
+    ob_end_flush();
+});
+
+function hostSession(array $data, string $name = 'PHPSESSID'): void
+{
+    session_name($name);
+    session_start();
+    $_SESSION = $data;
+    $_COOKIE[$name] = session_id();
+    session_write_close();
+    session_id('');
+    $_SESSION = [];
+}
+
 function check(string $label, mixed $got, mixed $want): void {
     global $fails;
     $ok = $got === $want;
@@ -96,7 +133,7 @@ $base = [
             'broken'   => ['hash' => $hashOp,    'role' => 'superuser'],
         ],
         'basic_roles'    => ['ildar' => 'admin', 'employee' => 'operator'],
-        'external_roles' => ['ildar' => 'admin'],
+        'external_roles' => [],
         'cookie_secure'  => false,
     ],
 ];
@@ -179,9 +216,92 @@ case 'basic-unmapped-username':
     check('unmapped basic user is nobody', Auth::user(), null);
     break;
 
-case 'external-stub-denies':
+case 'default-requires-parent-session':
+    Config::load([]);
+    $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+    check('default provider uses parent login', Auth::provider(), 'external');
+    check('loopback does not bypass shared login', Auth::user(), null);
+    break;
+
+case 'external-no-session':
     $cfg(['provider' => 'external']);
-    check('unwritten external provider denies all', Auth::user(), null);
+    check('missing parent session denied', Auth::user(), null);
+    break;
+
+case 'external-admin':
+case 'external-marketer':
+case 'external-unknown-role':
+case 'external-mismatched-email':
+case 'external-inactive-user':
+case 'external-allowlist-denies-unlisted':
+    $cfg(['provider' => 'external', 'external_roles' => $case === 'external-allowlist-denies-unlisted'
+        ? ['another@example.com' => 'admin'] : []]);
+    $hostRole = match ($case) {
+        'external-marketer' => 'marketer',
+        'external-unknown-role' => 'guest',
+        default => 'admin',
+    };
+    hostSession([
+        'user' => ['email' => 'Owner@Example.com'],
+        'app_user' => [
+            'email' => $case === 'external-mismatched-email' ? 'someone@example.com' : 'owner@example.com',
+            'role' => $hostRole,
+            'is_active' => $case === 'external-inactive-user' ? 0 : 1,
+        ],
+        'oauth_state' => 'keep-parent-data',
+    ]);
+    $expected = match ($case) {
+        'external-admin' => ['username' => 'owner@example.com', 'role' => 'admin'],
+        'external-marketer' => ['username' => 'owner@example.com', 'role' => 'operator'],
+        default => null,
+    };
+    check('host identity and role are checked', Auth::user(), $expected);
+    check('parent session lock is released', session_status(), PHP_SESSION_NONE);
+    check('parent session data is preserved', $_SESSION['oauth_state'], 'keep-parent-data');
+    check('shared cookie keeps Strict SameSite', session_get_cookie_params()['samesite'], 'Strict');
+    break;
+
+case 'external-legacy-session':
+case 'external-allowlist-maps-email':
+case 'external-bad-mapped-role':
+    $mappedRole = $case === 'external-bad-mapped-role' ? 'superuser' : 'operator';
+    $cfg(['provider' => 'external', 'external_roles' => $case === 'external-legacy-session'
+        ? [] : ['owner@example.com' => $mappedRole]]);
+    hostSession(['user' => ['email' => 'owner@example.com']]);
+    check('legacy session requires a valid explicit mapping', Auth::user(),
+        $case === 'external-allowlist-maps-email'
+            ? ['username' => 'owner@example.com', 'role' => 'operator'] : null);
+    break;
+
+case 'external-malformed-identity':
+    $cfg(['provider' => 'external']);
+    hostSession(['user' => ['email' => ['owner@example.com']], 'app_user' => 'admin']);
+    check('malformed identity denied', Auth::user(), null);
+    break;
+
+case 'external-forged-headers':
+    $cfg(['provider' => 'external']);
+    $_SERVER['HTTP_X_AUTH_USER'] = 'owner@example.com';
+    $_SERVER['HTTP_X_AUTH_ROLE'] = 'admin';
+    $_SERVER['PHP_AUTH_USER'] = 'owner@example.com';
+    $_COOKIE['user'] = 'owner@example.com';
+    $_COOKIE['role'] = 'admin';
+    check('client identity claims do not authenticate', Auth::user(), null);
+    break;
+
+case 'external-invalid-cookie':
+    $cfg(['provider' => 'external']);
+    $_COOKIE['PHPSESSID'] = ['not-a-session-id'];
+    check('invalid cookie denied without a type error', Auth::user(), null);
+    break;
+
+case 'external-wrong-session-name':
+    $cfg(['provider' => 'external']);
+    session_name('igfs');
+    session_start();
+    $_SESSION = ['user' => ['email' => 'owner@example.com'],
+        'app_user' => ['email' => 'owner@example.com', 'role' => 'admin']];
+    check('a different app session cannot supply identity', Auth::user(), null);
     break;
 
 case 'unknown-provider-throws':

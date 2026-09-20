@@ -1,5 +1,5 @@
 # Secrets. Never commit.
-config.php
+/config.php
 
 # Database dumps. 23MB each and they contain the whole dataset.
 data/*.sql

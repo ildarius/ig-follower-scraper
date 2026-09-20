@@ -19,11 +19,9 @@ $guardPage = basename($_SERVER['SCRIPT_NAME'] ?? 'index.php');
 $guardUser = Auth::user();
 
 if ($guardUser === null) {
-    // Not signed in. The builtin provider has a login form to send them to.
-    // The other providers do not, so they get a plain 401 instead of a
-    // redirect to a page that would not help them.
-    if (Auth::provider() === 'builtin') {
-        header('Location: login.php?next=' . rawurlencode($guardPage));
+    // Reuse the parent login for external auth, or the local builtin form.
+    if (in_array(Auth::provider(), ['external', 'builtin'], true)) {
+        header('Location: ' . Auth::loginUrl($guardPage));
         exit;
     }
 

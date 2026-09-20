@@ -163,6 +163,7 @@ $authUser = require __DIR__ . '/page-guard.php';
     const res = await fetch('api.php?action=' + action + (options.query ? '&' + options.query : ''), options.fetch || {});
     let body;
     try { body = await res.json(); } catch (_) { throw new Error('The server returned an invalid response.'); }
+    if (res.status === 401) window.location.assign(body.login || 'login.php');
     if (!res.ok || !body.ok) throw new Error(body.error || 'Request failed');
     return body;
   }

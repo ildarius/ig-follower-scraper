@@ -3,6 +3,15 @@
 Resume file for the migration described in [remote-migration-handoff.md](remote-migration-handoff.md).
 Started 2026-09-20. Update this file at the end of every work cycle.
 
+## Authentication update — 2026-09-20
+
+The parent SEO session integration is now implemented and is the default. Parent admins retain
+admin access; marketers receive operator access. Signed-out pages redirect to the parent login
+and APIs return `401`. All implementation changes are inside `ig-follower-scraper`; parent files
+are unchanged. This supersedes the authentication status in the snapshot below. See
+[README: Authentication and roles](README.md#authentication-and-roles) for configuration and tests.
+The private `config.php` is still absent on this host, so database/Apify operations need setup.
+
 ## Decisions taken 2026-09-20
 
 | # | Decision | Answer |

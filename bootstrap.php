@@ -9,18 +9,23 @@ define('APP_ROOT', __DIR__);
 mb_internal_encoding('UTF-8');
 
 $configPath = APP_ROOT . '/config.php';
-if (!is_file($configPath)) {
+define('APP_CONFIGURED', is_file($configPath));
+if (!APP_CONFIGURED && PHP_SAPI === 'cli') {
     fwrite(STDERR, "Missing config.php. Copy config.example.php to config.php and fill it in.\n");
-    if (PHP_SAPI !== 'cli') {
-        http_response_code(500);
-        header('Content-Type: application/json');
-        echo json_encode(['ok' => false, 'error' => 'Missing config.php. Copy config.example.php to config.php and fill it in.']);
-    }
     exit(1);
 }
 
+// Web authentication must work even before private DB/Apify settings exist.
+// With no auth configuration, Auth uses the parent site's session provider.
 /** @var array $CONFIG */
-$CONFIG = require $configPath;
+$CONFIG = APP_CONFIGURED ? require $configPath : [];
+
+if (PHP_SAPI !== 'cli') {
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: DENY');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+}
 
 date_default_timezone_set($CONFIG['timezone'] ?? 'America/New_York');
 

@@ -1,10 +1,7 @@
 <?php
 /**
- * Sign-in form for the builtin authentication provider.
- *
- * Under any other provider this page does nothing useful, because identity then
- * comes from the web server or from the host's existing sign-in system, so it
- * says so and stops rather than presenting a form that cannot work.
+ * Reuse the parent site's login/logout under external authentication.
+ * The builtin provider has its own sign-in form.
  */
 declare(strict_types=1);
 
@@ -18,6 +15,20 @@ $error    = null;
 $next = basename((string) ($_GET['next'] ?? $_POST['next'] ?? 'accounts.php'));
 if (!preg_match('/^[a-z0-9_-]+\.php$/i', $next)) {
     $next = 'accounts.php';
+}
+
+if ($provider === 'external') {
+    if (isset($_GET['logout'])) {
+        header('Location: ' . Auth::logoutUrl());
+    } else {
+        $user = Auth::user();
+        // Do not redirect back to login.php, even if requested via ?next=.
+        $destination = in_array($next, ['index.php', 'accounts.php'], true)
+            && $user !== null && Acl::allowsPage($user['role'], $next)
+            ? $next : 'accounts.php';
+        header('Location: ' . ($user === null ? Auth::loginUrl() : $destination));
+    }
+    exit;
 }
 
 if (isset($_GET['logout'])) {

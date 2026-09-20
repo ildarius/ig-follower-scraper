@@ -33,21 +33,18 @@ return [
     /**
      * Web authentication.
      *
-     * The whole block is optional. Leaving it out means provider 'localhost',
-     * which is the behaviour the application had before the remote move: only
-     * 127.0.0.1 and ::1 may reach it, always as admin. That is right for the PC
-     * and wrong for any host reachable from the internet.
+     * Defaults to the parent SEO site's PHP login session. For a standalone
+     * local installation, explicitly choose 'localhost' or 'builtin'.
      *
      * Four providers:
      *
-     *   localhost  127.0.0.1 and ::1 only, always admin. The PC default.
+     *   localhost  127.0.0.1 and ::1 only, always admin. Explicit local opt-in.
      *   builtin    Session login against the bcrypt hashes in 'users' below.
      *   basic      HTTP Basic enforced by the web server. PHP reads
      *              PHP_AUTH_USER and maps it through 'basic_roles'.
-     *   external   Identity comes from whatever already authenticates the host.
-     *              Write Auth::externalIdentity() to adopt it. Until that
-     *              function is written this provider denies everybody, which is
-     *              deliberate.
+     *   external   Reuse the parent SEO login. Admins stay admins; marketers
+     *              become operators. Unknown roles and missing sessions fail
+     *              closed. This is the default.
      *
      * Two roles, and they are not interchangeable. 'admin' may do everything.
      * 'operator' may open accounts.php and call four read-or-tag actions, and
@@ -55,7 +52,7 @@ return [
      * Apify and the one that dumps the database.
      */
     'auth' => [
-        'provider' => 'localhost',
+        'provider' => 'external',
 
         // Generate a hash with:
         //   php -r "echo password_hash('the password', PASSWORD_BCRYPT, ['cost' => 12]), PHP_EOL;"
@@ -70,13 +67,20 @@ return [
             // 'ildar' => 'admin',
         ],
 
-        // provider 'external': which username from the host's own sign-in
-        // system gets which role. A user not listed here is refused, so that
-        // having an account on the host does not by itself grant access here.
+        // Optional email allowlist for provider 'external'. Empty means use
+        // the parent's admin/marketer roles. Once any emails are listed, only
+        // those addresses may enter; use lowercase email keys.
         'external_roles' => [
-            // 'ildar' => 'admin',
+            // 'owner@example.com' => 'admin',
+            // 'employee@example.com' => 'operator',
         ],
 
+        // Use the same PHP session storage/handler as the parent site.
+        'external_session_name' => 'PHPSESSID',
+        'external_login_url' => '/login.php',
+        'external_logout_url' => '/logout.php',
+
+        // These settings apply only to the separate builtin login session.
         'session_name' => 'igfs',
 
         // 0 means the cookie expires when the browser closes.

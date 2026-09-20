@@ -1,0 +1,11 @@
+# The repository sits below the parent site's document root. Only the web UI
+# should be reachable; downloads must not bypass the PHP authentication guard.
+Options -Indexes
+
+RewriteEngine On
+RewriteRule ^$ %{REQUEST_URI}web/public/accounts.php [R=302,L]
+RewriteRule ^(?:src|data|sql|tests|\.git|\.agents|\.codex)(?:/|$) - [F,L]
+
+<FilesMatch "(?i)^(?:config(?:\.example)?\.php|bootstrap\.php|cli\.php|page-guard\.php|error_log)$|\.(?:md|markdown|ini|log|sql|gz|gitignore)$">
+    Require all denied
+</FilesMatch>

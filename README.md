@@ -235,10 +235,11 @@ Ildar can also run everything from PowerShell with `cli.php`, which has no reque
 | `cli.php` | PowerShell entry point. |
 | `web/public/index.php` | Dashboard. Admin only. |
 | `web/public/accounts.php` | Accounts browser. The page the employee uses. |
-| `web/public/login.php` | Sign-in form. Only meaningful under the `builtin` provider. |
+| `web/public/login.php` | Uses the parent login/logout for `external`; has a local form for `builtin`. |
 | `web/public/page-guard.php` | Included first by every page. Authenticates, then checks the role. |
 | `web/public/api.php` | JSON endpoint behind both pages. Authenticates and checks the role on every request. |
-| `tests/auth-acl-test.php` | 18 cases over `Auth` and `Acl`. Needs no database and no `config.php`. |
+| `tests/auth-acl-test.php` | Authentication and role tests. Needs no database and no `config.php`. |
+| `tests/web-auth-test.php` | HTTP tests with a temporary app copy and synthetic sessions. |
 
 Endpoints: `?action=` `start`, `status`, `import`, `import-all`, `abort`, `stats`, `queue`, `log`,
 `enrich`, `enrich-stats`, `raw`, `probe`, `migrate`, `reset-cursor`, `dump`, `accounts-search`,
@@ -294,16 +295,34 @@ to nobody. Which mechanism it uses is chosen with the `auth.provider` key in `co
 
 | Provider | Identity comes from | Use it when |
 |---|---|---|
-| `localhost` | `REMOTE_ADDR` being `127.0.0.1` or `::1`, always as admin | On this PC. It is the default, so nothing changed locally. |
+| `localhost` | `REMOTE_ADDR` being `127.0.0.1` or `::1`, always as admin | Explicit opt-in for a standalone local installation. |
 | `builtin` | A session login against bcrypt hashes in `config.php` | Any host, when nothing else is available. |
 | `basic` | `PHP_AUTH_USER`, set by the web server doing HTTP Basic | The web server already authenticates. |
-| `external` | Whatever already signs people in on the same host | Adopting the existing sign-in on `seo.bizousoft.com`. |
+| `external` | The parent SEO site's `PHPSESSID` session | Default on this host, including when the auth block is absent. |
 
-The `external` provider is a stub. `Auth::externalIdentity()` is the one function to write, and the
-comment above it gives a worked example for the common case of reading another PHP application's
-session. Until it is written it returns null, which denies everyone. That is deliberate: an
-unwritten authentication function that denies everybody is a locked door, and one that returns a
-default user is an open one.
+The `external` provider reuses the parent site's Google login. It reads `$_SESSION['user']['email']`
+and the matching `$_SESSION['app_user']` from the same PHP session storage and handler. Parent
+admins become scraper admins; parent marketers become operators. Missing identities, unknown
+roles, mismatched emails, and sessions marked inactive are denied. It does not trust identity or
+role headers sent by a browser, and it releases the session lock without rewriting the parent data.
+
+For a narrower list of users, populate `auth.external_roles` with lowercase email addresses and
+their `admin` or `operator` roles. Once this map has entries, unlisted addresses are denied even
+if they are parent-site admins. Legacy parent sessions without `app_user` also need this explicit
+email mapping. With an empty map, the recognised parent roles apply.
+
+Signed-out HTML requests redirect to `/login.php`; API requests return `401` JSON with that login
+URL. Both browser pages navigate to login when an API request reports an expired session.
+`web/public/login.php?logout=1` redirects to the parent's `/logout.php`. Override
+`auth.external_login_url`, `auth.external_logout_url`, and `auth.external_session_name` if the
+host uses different paths or a different session name. Shared cookies retain Secure, HttpOnly,
+and SameSite=Strict. The parent's existing login finishes at its dashboard; reopen the scraper
+after signing in. No parent files need modification.
+
+Authentication works before private `config.php` exists. After authentication and role checks,
+API requests return `503` until that file is supplied. Database and Apify setup are still required
+for application operations. The local `.htaccess` blocks direct access to source, tests, config,
+and data files, disables directory listings, and sends the project root to the accounts browser.
 
 `src/Acl.php` answers what that role may do. The operator role, meaning the employee, may open
 `accounts.php` and call four actions: `accounts-search`, `accounts-facets`, `accounts-bulk` and
@@ -332,15 +351,14 @@ Run the tests after deploying, before letting anyone in:
 
 ```powershell
 php tests/auth-acl-test.php
+php tests/web-auth-test.php
 ```
 
-18 cases, covering all four providers, both roles, every action listed above, the page rules and the
-row cap. Exit status is 0 when they all pass. Neither class touches the database, so this needs no
-`config.php` and runs anywhere PHP does.
-
-**Still to do.** `Auth::externalIdentity()` is unwritten, so the `external` provider cannot be used
-yet. Until the `seo.bizousoft.com` mechanism is known, deploy with `builtin` and real bcrypt hashes,
-or with `basic` behind the web server.
+The unit suite covers all four providers, shared-session validation, both roles, the page rules,
+and the row cap. The HTTP suite requires curl and permission to open a temporary localhost port;
+it verifies redirects, `401`/`403` responses, session expiry, and preservation of the shared session.
+Both suites use isolated temporary sessions and need no database, Apify token, or `config.php`.
+Exit status is 0 when all checks pass.
 `log` returns the Apify run log as JSON lines, which is the only place the actor reports a
 subscription cap or a silent stop.
 

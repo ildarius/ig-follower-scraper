@@ -22,9 +22,8 @@ declare(strict_types=1);
  *              contained, works on any host, carries a per-user role.
  *   basic      HTTP Basic enforced by the web server. PHP reads PHP_AUTH_USER
  *              and maps it to a role through 'auth.basic_roles'.
- *   external   Identity comes from whatever already authenticates the host.
- *              See externalIdentity() below, which is the only function that
- *              needs to be written to adopt an existing sign-in system.
+ *   external   The default: reuse the parent SEO site's PHP login session.
+ *              Parent admins remain admins; marketers become operators.
  */
 final class Auth
 {
@@ -46,7 +45,7 @@ final class Auth
             return self::$resolved['user'];
         }
 
-        $provider = (string) Config::get('auth.provider', 'localhost');
+        $provider = self::provider();
 
         $user = match ($provider) {
             'localhost' => self::localhostUser(),
@@ -98,13 +97,27 @@ final class Auth
      */
     public static function provider(): string
     {
-        return (string) Config::get('auth.provider', 'localhost');
+        return (string) Config::get('auth.provider', 'external');
+    }
+
+    public static function loginUrl(string $next = 'accounts.php'): string
+    {
+        return self::provider() === 'external'
+            ? (string) Config::get('auth.external_login_url', '/login.php')
+            : 'login.php?next=' . rawurlencode(basename($next));
+    }
+
+    public static function logoutUrl(): string
+    {
+        return self::provider() === 'external'
+            ? (string) Config::get('auth.external_logout_url', '/logout.php')
+            : 'login.php?logout=1';
     }
 
     // ---------------------------------------------------------------- providers
 
     /**
-     * The original localhost guard, preserved so the PC keeps working unchanged.
+     * The original localhost guard, available by explicitly choosing localhost.
      */
     private static function localhostUser(): ?array
     {
@@ -169,49 +182,79 @@ final class Auth
     }
 
     /**
-     * Identity from an existing sign-in system on the same host.
+     * Reuse the session written by the parent site's Google OAuth callback.
+     * Only server-side session data supplies identity, never request headers or
+     * a browser-supplied username/role. Read and close it immediately so scraper
+     * work neither rewrites the parent session nor holds its lock.
      *
-     * THIS IS THE FUNCTION TO WRITE when adopting the authentication already
-     * running on seo.bizousoft.com. It must return either null, meaning nobody
-     * is signed in, or ['username' => string, 'role' => 'admin'|'operator'].
-     *
-     * Whatever it reads, three rules apply.
-     *
-     * First, it must never trust a value the browser can set directly. A cookie
-     * saying role=admin is a value the browser can set. A session id that the
-     * other application's own session store resolves to a user is not.
-     *
-     * Second, the role must be derived here rather than taken from the other
-     * system, unless that system already has a role concept that means the same
-     * thing. Mapping its usernames through 'auth.external_roles' in config.php
-     * is the simplest correct approach, and is what the example below does.
-     *
-     * Third, an unrecognised user returns null rather than a default role. A
-     * user of seo.bizousoft.com who has nothing to do with this application must
-     * not become an operator of it by existing.
-     *
-     * Worked example, for the common case where the other application on the
-     * same host stores its login in a PHP session:
-     *
-     *     session_name('the_other_apps_session_name');
-     *     session_start();
-     *     $username = $_SESSION['username'] ?? null;
-     *     if (!is_string($username) || $username === '') {
-     *         return null;
-     *     }
-     *     $roles = Config::get('auth.external_roles', []);
-     *     if (!isset($roles[$username])) {
-     *         return null;
-     *     }
-     *     return ['username' => $username, 'role' => (string) $roles[$username]];
-     *
-     * Until it is written, it returns null, which denies everyone. That is
-     * deliberate. An unwritten authentication function that denies everyone is a
-     * locked door; one that returns a default user is an open one.
+     * A nonempty external_roles map is an email allowlist. Otherwise the parent
+     * app_user must match the signed-in email and have a recognised host role.
+     * Legacy sessions without app_user need an explicit email mapping.
      */
     private static function externalIdentity(): ?array
     {
-        return null;
+        $name = (string) Config::get('auth.external_session_name', 'PHPSESSID');
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            if (session_name() !== $name) {
+                return null;
+            }
+        } else {
+            $id = $_COOKIE[$name] ?? null;
+            if (!is_string($id) || !preg_match('/^[a-zA-Z0-9,-]{1,256}$/D', $id)) {
+                return null;
+            }
+
+            session_name($name);
+            session_id($id);
+            session_set_cookie_params([
+                'lifetime' => 0,
+                'path'     => '/',
+                'secure'   => true,
+                'httponly' => true,
+                'samesite' => 'Strict',
+            ]);
+            if (!session_start([
+                'read_and_close'   => true,
+                'use_strict_mode'  => true,
+                'use_only_cookies' => true,
+                'use_cookies'      => true,
+            ])) {
+                return null;
+            }
+        }
+
+        $user = $_SESSION['user'] ?? null;
+        $email = is_array($user) ? ($user['email'] ?? null) : null;
+        if (!is_string($email) || !filter_var(trim($email), FILTER_VALIDATE_EMAIL)) {
+            return null;
+        }
+        $email = strtolower(trim($email));
+
+        $appUser = $_SESSION['app_user'] ?? null;
+        if ($appUser !== null && (!is_array($appUser)
+            || !is_string($appUser['email'] ?? null)
+            || strtolower(trim($appUser['email'])) !== $email
+            || (isset($appUser['is_active']) && (int) $appUser['is_active'] !== 1))) {
+            return null;
+        }
+
+        $roles = Config::get('auth.external_roles', []);
+        if (!is_array($roles)) {
+            return null;
+        }
+        $role = $roles !== []
+            ? ($roles[$email] ?? null)
+            : match ($appUser['role'] ?? null) {
+                'admin'    => self::ROLE_ADMIN,
+                'marketer' => self::ROLE_OPERATOR,
+                default    => null,
+            };
+
+        if (!is_string($role) || !in_array($role, self::ROLES, true)) {
+            return null;
+        }
+
+        return ['username' => $email, 'role' => $role];
     }
 
     // ------------------------------------------------------------------- login
