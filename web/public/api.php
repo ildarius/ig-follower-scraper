@@ -20,10 +20,40 @@ require dirname(__DIR__, 2) . '/bootstrap.php';
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
-$remote = $_SERVER['REMOTE_ADDR'] ?? '';
-if (!in_array($remote, ['127.0.0.1', '::1'], true)) {
+/**
+ * Authentication, then authorisation, then the action.
+ *
+ * What stood here was a comparison of REMOTE_ADDR against 127.0.0.1. That is
+ * correct on the PC and wrong on a remote host, where REMOTE_ADDR is the
+ * visitor's address and the check rejects everyone. Auth replaces it, and keeps
+ * the original behaviour available as the 'localhost' provider so that nothing
+ * changes on the PC.
+ *
+ * The role check sits here, above the switch, rather than inside the individual
+ * cases. An action added to the switch later is therefore denied to the
+ * operator role until it is named in Acl, instead of being exposed by having
+ * been forgotten.
+ */
+$authUser = Auth::user();
+
+if ($authUser === null) {
+    http_response_code(401);
+    echo json_encode([
+        'ok'    => false,
+        'error' => 'Not signed in.',
+        'login' => 'login.php',
+    ]);
+    exit;
+}
+
+$requestedAction = (string) ($_GET['action'] ?? 'stats');
+
+if (!Acl::allowsAction($authUser['role'], $requestedAction)) {
     http_response_code(403);
-    echo json_encode(['ok' => false, 'error' => 'Localhost only. Refused ' . $remote]);
+    echo json_encode([
+        'ok'    => false,
+        'error' => 'The ' . $authUser['role'] . ' role may not call ' . $requestedAction . '.',
+    ]);
     exit;
 }
 
@@ -34,7 +64,7 @@ function respond(array $payload, int $status = 200): never
     exit;
 }
 
-$action = (string) ($_GET['action'] ?? 'stats');
+$action = $requestedAction;
 
 try {
     $scraper = new Scraper();
@@ -68,7 +98,7 @@ try {
             if (!is_array($body)) {
                 respond(['ok' => false, 'error' => 'request body must be a JSON object'], 400);
             }
-            respond(['ok' => true] + AccountsBrowser::bulk($body));
+            respond(['ok' => true] + AccountsBrowser::bulk($body, Acl::bulkLimits($authUser['role'])));
 
         case 'start':
             $username = trim((string) ($_GET['username'] ?? ''));
@@ -588,6 +618,111 @@ try {
                 'all_keys'   => $keys,
                 'items'      => $items,
                 'log_tail'   => array_slice(preg_split('/\r?\n/', trim($apify->getRunLog($runId))) ?: [], -6),
+            ]);
+
+        case 'dump':
+            // Full logical backup of the database, written by PHP because
+            // mysqldump is not reachable from every environment this app is
+            // driven from. Output is plain SQL, restorable with:
+            //   mysql -u user -p dbname < dump.sql
+            //
+            // &tables=a,b restricts to named tables. &data=0 dumps schema only.
+            @set_time_limit(0);
+
+            $dbName   = (string) Config::get('db.name', 'sunny_kratom');
+            $withData = !isset($_GET['data']) || ($_GET['data'] !== '0' && $_GET['data'] !== 'false');
+            $only     = isset($_GET['tables']) && $_GET['tables'] !== ''
+                ? array_filter(array_map('trim', explode(',', (string) $_GET['tables'])))
+                : null;
+
+            $all = array_map('current', Db::all('SHOW TABLES'));
+            $tables = $only === null ? $all : array_values(array_intersect($all, $only));
+            if ($tables === []) {
+                respond(['ok' => false, 'error' => 'no matching tables', 'available' => $all], 400);
+            }
+
+            $dir = APP_ROOT . '/data';
+            if (!is_dir($dir)) { mkdir($dir, 0775, true); }
+            $name = 'dump-' . $dbName . '-' . date('Ymd-His') . ($withData ? '' : '-schema') . '.sql';
+            $path = $dir . '/' . $name;
+
+            $fh = fopen($path, 'wb');
+            if ($fh === false) {
+                respond(['ok' => false, 'error' => 'could not open ' . $path . ' for writing'], 500);
+            }
+
+            $pdo = Db::pdo();
+            $counts = [];
+
+            fwrite($fh, "-- Dump of `{$dbName}` written " . Config::now() . " (" . Config::get('timezone') . ")\n");
+            fwrite($fh, "-- Produced by ig-follower-scraper api.php?action=dump\n");
+            fwrite($fh, "-- Restore with: mysql -u <user> -p <database> < " . $name . "\n");
+            fwrite($fh, "--\n");
+            fwrite($fh, "-- The target database must already exist, for example:\n");
+            fwrite($fh, "--   CREATE DATABASE `{$dbName}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n\n");
+            fwrite($fh, "SET NAMES utf8mb4;\n");
+            fwrite($fh, "SET FOREIGN_KEY_CHECKS = 0;\n");
+            fwrite($fh, "SET SQL_MODE = 'NO_AUTO_VALUE_ON_ZERO';\n");
+            fwrite($fh, "SET time_zone = '+00:00';\n\n");
+
+            foreach ($tables as $t) {
+                $create = Db::one('SHOW CREATE TABLE `' . str_replace('`', '', $t) . '`');
+                $ddl = $create['Create Table'] ?? ($create['Create View'] ?? null);
+                if ($ddl === null) { continue; }
+
+                fwrite($fh, "\n--\n-- Table `{$t}`\n--\n\n");
+                fwrite($fh, "DROP TABLE IF EXISTS `{$t}`;\n");
+                fwrite($fh, $ddl . ";\n\n");
+
+                $rows = (int) Db::scalar('SELECT COUNT(*) FROM `' . str_replace('`', '', $t) . '`');
+                $counts[$t] = $rows;
+
+                if (!$withData || $rows === 0) { continue; }
+
+                fwrite($fh, "LOCK TABLES `{$t}` WRITE;\n");
+
+                $stmt = $pdo->prepare('SELECT * FROM `' . str_replace('`', '', $t) . '`');
+                $stmt->execute();
+
+                $batch = [];
+                $batchSize = 200;
+                $cols = null;
+
+                while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                    if ($cols === null) {
+                        $cols = '`' . implode('`, `', array_keys($row)) . '`';
+                    }
+                    $vals = [];
+                    foreach ($row as $v) {
+                        // Quote everything except NULL. MySQL coerces quoted
+                        // numerics, and quoting avoids locale and float issues.
+                        $vals[] = $v === null ? 'NULL' : $pdo->quote((string) $v);
+                    }
+                    $batch[] = '(' . implode(',', $vals) . ')';
+
+                    if (count($batch) >= $batchSize) {
+                        fwrite($fh, "INSERT INTO `{$t}` ({$cols}) VALUES\n" . implode(",\n", $batch) . ";\n");
+                        $batch = [];
+                    }
+                }
+                if ($batch !== []) {
+                    fwrite($fh, "INSERT INTO `{$t}` ({$cols}) VALUES\n" . implode(",\n", $batch) . ";\n");
+                }
+
+                fwrite($fh, "UNLOCK TABLES;\n");
+            }
+
+            fwrite($fh, "\nSET FOREIGN_KEY_CHECKS = 1;\n");
+            fclose($fh);
+
+            respond([
+                'ok'          => true,
+                'file'        => $name,
+                'path'        => $path,
+                'bytes'       => filesize($path),
+                'with_data'   => $withData,
+                'tables'      => $counts,
+                'total_rows'  => array_sum($counts),
             ]);
 
         case 'migrate':

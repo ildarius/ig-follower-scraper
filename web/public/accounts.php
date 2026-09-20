@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 require dirname(__DIR__, 2) . '/bootstrap.php';
+$authUser = require __DIR__ . '/page-guard.php';
 ?>
 <!DOCTYPE html>
 <html lang="en">

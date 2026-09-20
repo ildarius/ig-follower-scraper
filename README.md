@@ -72,6 +72,10 @@ walks down the list without paying twice for anyone.
 
 ### Every endpoint
 
+Every action below requires an authenticated caller. Only `accounts-search`, `accounts-facets`,
+`accounts-bulk` and `queue-stats` are available to the operator role; the rest are admin only. See
+[Authentication and roles](#authentication-and-roles).
+
 | Endpoint | What it does |
 |---|---|
 | `?action=usage` | Spend, cap, remaining, billing cycle dates |
@@ -97,6 +101,7 @@ walks down the list without paying twice for anyone.
 | `?action=raw&run=N&n=2[&clean=0]` | Raw dataset items, unmapped. `clean=0` shows hidden fields |
 | `?action=probe&actor=X&input=<json>&wait=90` | Run any actor with any input, return its raw output |
 | `?action=migrate` | Apply schema additions idempotently |
+| `?action=dump[&data=0][&tables=a,b]` | Full SQL backup written to `data/`. `data=0` for schema only |
 
 `?action=probe` is how to answer "what does this actor return" before writing code against it. Actor
 pages do not list output fields, and summaries of them were wrong twice here. A probe costs under a
@@ -222,15 +227,24 @@ Ildar can also run everything from PowerShell with `cli.php`, which has no reque
 | `config.php` | Real secrets. Gitignored. Never commit it. |
 | `sql/schema.sql` | Creates the `sunny_kratom` database and three tables. |
 | `src/Config.php` | Dot-path config reader plus the New York timestamp helper. |
+| `src/Auth.php` | Who the visitor is. Four providers, two roles. Replaced the localhost guard. |
+| `src/Acl.php` | What that role may do. Positive, closed allowlist plus the operator row cap. |
 | `src/Db.php` | PDO singleton, utf8mb4, exceptions on, emulated prepares off. |
 | `src/Apify.php` | REST client: start a run, read a run, abort a run, page a dataset. |
 | `src/Scraper.php` | Orchestration: `start()`, `refresh()`, `importBatch()`, `importAll()`, `stats()`. |
 | `cli.php` | PowerShell entry point. |
-| `web/public/index.php` | Local dashboard. |
-| `web/public/api.php` | Localhost-guarded JSON endpoint behind the dashboard. |
+| `web/public/index.php` | Dashboard. Admin only. |
+| `web/public/accounts.php` | Accounts browser. The page the employee uses. |
+| `web/public/login.php` | Sign-in form. Only meaningful under the `builtin` provider. |
+| `web/public/page-guard.php` | Included first by every page. Authenticates, then checks the role. |
+| `web/public/api.php` | JSON endpoint behind both pages. Authenticates and checks the role on every request. |
+| `tests/auth-acl-test.php` | 18 cases over `Auth` and `Acl`. Needs no database and no `config.php`. |
 
 Endpoints: `?action=` `start`, `status`, `import`, `import-all`, `abort`, `stats`, `queue`, `log`,
-`enrich`, `enrich-stats`, `raw`, `probe`, `migrate`, `reset-cursor`.
+`enrich`, `enrich-stats`, `raw`, `probe`, `migrate`, `reset-cursor`, `dump`, `accounts-search`,
+`accounts-facets`, `accounts-bulk`, `queue-stats`, `queue-head`, `queue-row`, `recent-attempts`,
+`facets`, `account`, `profile`, `bio-search`, `import-followed`, `actor-pricing`, `run-cost`,
+`usage`.
 
 `import` and `import-all` route by the run's `kind` column, so the same buttons work for follower
 runs and enrichment runs.
@@ -241,6 +255,92 @@ not list their output fields, and summaries of them were wrong twice in this pro
 a fraction of a cent.
 
 **`?action=migrate`** applies schema additions idempotently, so a schema change needs no HeidiSQL.
+
+**`?action=dump`** writes a full logical backup to `data/dump-<db>-<timestamp>.sql`, using PHP rather
+than `mysqldump`. 23 MB and 37,576 rows as of 2026-09-20, about 5 MB gzipped. Restore with
+`mysql -u <user> -p <database> < dump.sql`. Dumps are git-ignored.
+
+### Moving to a remote host
+
+Planned in [remote-migration-handoff.md](remote-migration-handoff.md), tracked in
+[remote-migration-progress.md](remote-migration-progress.md), with the full portability audit in
+[remote-hosting-notes.md](remote-hosting-notes.md).
+
+The PHP application was already portable: every path derives from `__DIR__`, `config.php` and
+`data/` sit above the docroot, and all connection settings are config-driven. The access control was
+not portable, and has been replaced. See [Authentication and roles](#authentication-and-roles).
+
+`instagram-follower.js` stays on the PC. It depends on an aged, signed-in Chrome profile and a
+residential Quebec address, and moving that session to a datacenter address is a common trigger for
+an Instagram checkpoint. It reads its database settings from `.env`, so it drives the remote MySQL
+while continuing to run locally. The changes that made that safe are in that script's own
+[README](../instagram-follower/README.md).
+
+## Authentication and roles
+
+The application used to allow exactly one visitor: whoever connected from `127.0.0.1`. That was
+enforced by a single comparison near the top of `api.php`. On a remote host `REMOTE_ADDR` is the
+visitor's address, so the same comparison rejects everyone, including the operator.
+
+Deleting it is not an option. `?action=start` and `?action=enrich` spend real money at Apify,
+`?action=accounts-bulk` can rewrite thousands of rows, and `?action=dump` returns the whole dataset.
+An unauthenticated copy of this application on a public address gives all of that to anyone who
+finds the URL.
+
+Two new classes replace it.
+
+`src/Auth.php` answers who the visitor is. It resolves them to a username and one of two roles, or
+to nobody. Which mechanism it uses is chosen with the `auth.provider` key in `config.php`:
+
+| Provider | Identity comes from | Use it when |
+|---|---|---|
+| `localhost` | `REMOTE_ADDR` being `127.0.0.1` or `::1`, always as admin | On this PC. It is the default, so nothing changed locally. |
+| `builtin` | A session login against bcrypt hashes in `config.php` | Any host, when nothing else is available. |
+| `basic` | `PHP_AUTH_USER`, set by the web server doing HTTP Basic | The web server already authenticates. |
+| `external` | Whatever already signs people in on the same host | Adopting the existing sign-in on `seo.bizousoft.com`. |
+
+The `external` provider is a stub. `Auth::externalIdentity()` is the one function to write, and the
+comment above it gives a worked example for the common case of reading another PHP application's
+session. Until it is written it returns null, which denies everyone. That is deliberate: an
+unwritten authentication function that denies everybody is a locked door, and one that returns a
+default user is an open one.
+
+`src/Acl.php` answers what that role may do. The operator role, meaning the employee, may open
+`accounts.php` and call four actions: `accounts-search`, `accounts-facets`, `accounts-bulk` and
+`queue-stats`. The admin role may do everything. The list is positive and closed, so an action added
+to `api.php` next month is denied to the operator until it is named in `Acl`, rather than exposed by
+having been forgotten.
+
+Three further limits apply to the operator role:
+
+- `accounts-bulk` accepts only `skip` and `revert`, checked in `AccountsBrowser::bulk()` against the
+  limits `Acl` supplies.
+- One bulk operation may change at most 500 rows, configurable with `auth.operator_bulk_max_rows`.
+  The cap is measured against the number of rows the `UPDATE` would actually touch, inside the
+  transaction, so a select-all with no filter is refused before anything is written. Without the
+  cap, one such click marks the entire queue of roughly 10,800 accounts and the only visible symptom
+  would be the follow script quietly running out of work.
+- Requesting `index.php` returns 403 rather than a redirect, because a redirect would confirm that
+  the page exists.
+
+The checks sit in two places. `api.php` checks on every request, above the `switch`. Pages include
+`web/public/page-guard.php` as their first statement, before any output. Pages also hide controls
+the role cannot use, which is presentation only; the decision that counts is the one `api.php`
+makes.
+
+Run the tests after deploying, before letting anyone in:
+
+```powershell
+php tests/auth-acl-test.php
+```
+
+18 cases, covering all four providers, both roles, every action listed above, the page rules and the
+row cap. Exit status is 0 when they all pass. Neither class touches the database, so this needs no
+`config.php` and runs anywhere PHP does.
+
+**Still to do.** `Auth::externalIdentity()` is unwritten, so the `external` provider cannot be used
+yet. Until the `seo.bizousoft.com` mechanism is known, deploy with `builtin` and real bcrypt hashes,
+or with `basic` behind the web server.
 `log` returns the Apify run log as JSON lines, which is the only place the actor reports a
 subscription cap or a silent stop.
 

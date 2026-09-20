@@ -1,12 +1,17 @@
 <?php
 /**
- * Small local dashboard. Everything it does goes through api.php, which is
- * localhost guarded. Start a run, watch it, then import the dataset one page
- * at a time until the import reports done.
+ * Small dashboard. Everything it does goes through api.php, which authenticates
+ * every request and checks the caller's role. Start a run, watch it, then
+ * import the dataset one page at a time until the import reports done.
+ *
+ * This page is admin only. It exposes the actions that spend money at Apify and
+ * the ones that change importer state, so Acl does not grant it to the operator
+ * role and the guard below returns 403 rather than redirecting.
  */
 declare(strict_types=1);
 
 require dirname(__DIR__, 2) . '/bootstrap.php';
+$authUser = require __DIR__ . '/page-guard.php';
 
 $bootError = null;
 $stats     = null;

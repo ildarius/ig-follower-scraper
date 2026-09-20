@@ -1,6 +1,14 @@
 # Accounts Browser - Developer Specification
 
-**Version 1.0, 2026-09-17. Status: approved, ready to build.**
+**Version 1.1, 2026-09-20. Status: built, and amended for the remote move.**
+
+> Version 1.1 changes the access control only. Version 1.0 assumed this page
+> would only ever be served from localhost, and said so in sections 6, 8 and 12.
+> The application has since moved to a remote host so that a remote employee can
+> use this page, which makes the localhost guard both wrong and insufficient.
+> Those three sections are corrected below. Nothing about the filters, the
+> wildcard rules, the bulk actions or the test plan has changed, except for one
+> added constraint on how many rows one bulk action may touch.
 
 A filtering and bulk-tagging web interface over the Instagram follow queue, so unwanted accounts can
 be excluded before the follow automation reaches them.
@@ -308,12 +316,19 @@ After a successful action the page reloads the current filter and reports what h
 
 ## 6. API
 
-Add to the existing `web/public/api.php`, which already enforces this guard and must continue to:
+Add to the existing `web/public/api.php`.
 
-```php
-$remote = $_SERVER['REMOTE_ADDR'] ?? '';
-if (!in_array($remote, ['127.0.0.1', '::1'], true)) { /* 403 */ }
-```
+**Changed in 1.1.** That file used to open with a comparison of `REMOTE_ADDR` against `127.0.0.1`,
+and version 1.0 of this spec said to keep it. It has been replaced, because on a remote host
+`REMOTE_ADDR` is the visitor's address and the comparison rejects everyone. `api.php` now resolves
+the caller through `Auth`, then checks the caller's role through `Acl`, before reaching the `switch`
+on `$_GET['action']`. Both checks run on every request.
+
+An unauthenticated request returns 401 with `{"ok": false, "error": "Not signed in.", "login":
+"login.php"}`. An authenticated request for an action the role may not call returns 403.
+
+The operator role may call only `accounts-search`, `accounts-facets`, `accounts-bulk` and
+`queue-stats`. Everything else in `api.php` is admin only.
 
 All responses are JSON with an `ok` boolean. On failure, `ok` is false with an `error` string and an
 appropriate HTTP status.
@@ -419,6 +434,12 @@ keeps the request small and guarantees the write matches the count the user was 
 Validation: `note` is required and non-empty when `operation` is `skip`, maximum 255 characters.
 Reject a request with neither `ids` nor `select_all`. Reject `ids` longer than 5,000 entries.
 
+**Added in 1.1.** For the operator role, one bulk operation may change at most 500 rows, set by
+`auth.operator_bulk_max_rows` in `config.php`. The limit is checked inside the transaction against
+the number of rows the `UPDATE` would actually touch, not against the length of the `ids` array, so
+a `select_all` with no filter is refused before anything is written. Exceeding it returns 400 with a
+message naming both the matched count and the cap. The admin role is not capped.
+
 ---
 
 ## 7. Interface
@@ -460,7 +481,12 @@ comes from a third-party scrape and contains arbitrary user-controlled text.
 3. **Escape all output.** Bios and full names contain arbitrary text, emoji and HTML-significant
    characters. Use `htmlspecialchars($v, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')` on every rendered
    value, including inside `title` attributes.
-4. Keep the existing localhost guard on `api.php`.
+4. **Changed in 1.1.** The localhost guard is gone. `api.php` authenticates every request through
+   `Auth` and checks the caller's role through `Acl`, both above the `switch`, so an action added
+   later is denied to the operator role by default rather than exposed by being forgotten. Pages
+   include `web/public/page-guard.php` as their first statement, before any output. Requesting
+   `index.php` as an operator returns 403 and not a redirect, because a redirect would confirm that
+   the page exists.
 5. The bulk endpoint must be POST only.
 
 ---
@@ -531,7 +557,9 @@ re-derive them before testing.
 - Creating or deleting accounts. Rows come from the Apify scrape and are never hand-created.
 - Editing any field other than `follow_status` and `follow_note`.
 - A priority or ordering concept. The follow queue is strictly `ORDER BY id` and stays that way.
-- Authentication. The localhost guard is the access control.
+- ~~Authentication. The localhost guard is the access control.~~ **No longer out of scope as of
+  1.1.** See the correction to section 8 above, and the "Authentication and roles" section of
+  [README.md](README.md).
 - Undo history beyond the "Revert to pending" action.
 - Mobile layout.
 

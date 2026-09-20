@@ -101,11 +101,21 @@ final class AccountsBrowser
         ];
     }
 
-    public static function bulk(array $body): array
+    /**
+     * @param array|null $limits Extra per-role restrictions from Acl::bulkLimits().
+     *                           Null means no restriction beyond the rules that
+     *                           apply to everybody.
+     */
+    public static function bulk(array $body, ?array $limits = null): array
     {
         $operation = (string) ($body['operation'] ?? '');
         if (!in_array($operation, ['skip', 'revert'], true)) {
             throw new InvalidArgumentException('operation must be skip or revert');
+        }
+
+        if ($limits !== null && isset($limits['operations']) && is_array($limits['operations'])
+            && !in_array($operation, $limits['operations'], true)) {
+            throw new InvalidArgumentException('your role may not perform the ' . $operation . ' operation');
         }
 
         $note = trim((string) ($body['note'] ?? ''));
@@ -169,6 +179,21 @@ final class AccountsBrowser
         $pdo->beginTransaction();
         try {
             $matched = (int) Db::scalar('SELECT COUNT(*)' . $from . $where, $params);
+
+            // The cap is checked against the matched count inside the
+            // transaction, so it measures what the UPDATE would actually touch
+            // rather than the length of the id list the caller sent. A
+            // select-all with no filter matches the whole queue and is refused
+            // here, before anything is written.
+            $maxRows = $limits['max_rows'] ?? null;
+            if ($maxRows !== null && $matched > (int) $maxRows) {
+                throw new InvalidArgumentException(
+                    'this operation matches ' . number_format($matched) . ' rows, and your role is '
+                    . 'limited to ' . number_format((int) $maxRows) . ' rows at a time. '
+                    . 'Narrow the filter and repeat.'
+                );
+            }
+
             $changed = Db::run('UPDATE ig_accounts a LEFT JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id SET ' . $set . $writeWhere, $writeParams);
             $pdo->commit();
         } catch (Throwable $e) {

@@ -1,2 +1,10 @@
+# Secrets. Never commit.
 config.php
+
+# Database dumps. 23MB each and they contain the whole dataset.
+data/*.sql
+data/*.sql.gz
+
+# Logs and run artefacts.
 *.log
+run-screenshots/
