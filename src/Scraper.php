@@ -284,7 +284,7 @@ final class Scraper
 
     /**
      * Import every remaining page. Only safe from the CLI, where there is no
-     * request timeout. The web endpoint calls importBatch() one page at a time.
+     * request timeout. Route each batch by run kind, just like the web endpoint.
      *
      * @return array{imported:int, skipped:int, batches:int, errors:array<int,string>}
      */
@@ -296,7 +296,7 @@ final class Scraper
         $errors   = [];
 
         while (true) {
-            $result = $this->importBatch($runRowId);
+            $result = $this->importAny($runRowId);
             $imported += $result['imported'];
             $skipped  += $result['skipped'];
             $errors    = array_values(array_unique(array_merge($errors, $result['errors'])));

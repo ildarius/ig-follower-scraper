@@ -25,6 +25,9 @@ $authUser = require __DIR__ . '/page-guard.php';
   h1 { font-size:22px; margin:0; }
   a { color:var(--accent); }
   .header { display:flex; justify-content:space-between; align-items:baseline; gap:16px; margin-bottom:18px; }
+  .header-links { display:flex; gap:14px; flex-wrap:wrap; justify-content:flex-end; }
+  .sign-out { padding:7px 12px; border:1px solid var(--line); border-radius:6px; text-decoration:none; }
+  .sign-out:hover { border-color:var(--accent); }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
   .filters { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:13px; }
   label, legend { display:block; font-size:13px; color:var(--muted); margin-bottom:4px; }
@@ -82,7 +85,7 @@ $authUser = require __DIR__ . '/page-guard.php';
 </head>
 <body>
 <main class="wrap">
-  <header class="header"><div><h1>Accounts browser</h1><div class="muted">Filter and tag the Instagram follow queue.</div></div><a href="index.php">Back to dashboard</a></header>
+  <header class="header"><div><h1>Accounts browser</h1><div class="muted">Filter and tag the Instagram follow queue.</div></div><nav class="header-links" aria-label="Account navigation"><a href="index.php">Back to dashboard</a><a class="sign-out" href="login.php?logout=1">Sign out</a></nav></header>
 
   <form id="filter-form" class="panel">
     <div class="filters">

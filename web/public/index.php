@@ -87,6 +87,7 @@ function h(?string $s): string
     font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   .wrap { max-width: 900px; margin: 0 auto; }
+  .page-header { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   h2 { font-size: 15px; margin: 28px 0 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
   .sub { color: var(--muted); margin: 0 0 20px; }
@@ -115,13 +116,45 @@ function h(?string $s): string
   .err { color: var(--err); }
   .note { color: var(--muted); font-size: 13px; }
   code { background: var(--panel); padding: 1px 5px; border-radius: 4px; }
+  .sign-out { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .sign-out:hover { border-color: var(--accent); }
+  .enrich-progress[hidden] { display: none; }
+  .enrich-progress {
+    position: fixed; inset: 0; z-index: 10; display: grid; place-items: center;
+    padding: 24px; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  }
+  .enrich-progress-card {
+    width: min(100%, 420px); padding: 28px; text-align: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 16px 48px rgb(0 0 0 / .18);
+  }
+  .spinner {
+    width: 42px; height: 42px; margin: 0 auto 16px; border: 4px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite;
+  }
+  .enrich-progress h2 { margin: 0 0 8px; color: var(--fg); font-size: 18px; text-transform: none; letter-spacing: normal; }
+  .enrich-progress p { margin: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style>
 </head>
 <body>
+<div class="enrich-progress" id="enrich-progress" hidden role="status" aria-live="assertive" aria-atomic="true">
+  <div class="enrich-progress-card">
+    <div class="spinner" aria-hidden="true"></div>
+    <h2>Enrichment in progress</h2>
+    <p id="enrich-progress-message">Keep this tab open while Apify runs and profiles are imported.</p>
+  </div>
+</div>
 <div class="wrap">
 
-  <h1>IG Follower Scraper</h1>
-  <p class="sub">Apify <code>instagram-followers-following-scraper</code> into MySQL <code><?= h((string) Config::get('db.name')) ?></code>. <a href="accounts.php">Browse accounts</a></p>
+  <header class="page-header">
+    <div>
+      <h1>IG Follower Scraper</h1>
+      <p class="sub">Apify <code>instagram-followers-following-scraper</code> into MySQL <code><?= h((string) Config::get('db.name')) ?></code>. <a href="accounts.php">Browse accounts</a></p>
+    </div>
+    <a class="sign-out" href="login.php?logout=1">Sign out</a>
+  </header>
 
 <?php if ($bootError !== null): ?>
   <div class="panel">
@@ -186,10 +219,11 @@ function h(?string $s): string
       </div>
     </div>
     <div class="actions">
-      <button class="primary" id="btn-enrich">Start enrichment</button>
-      <button id="btn-enrich-import">Import until done</button>
+      <button class="primary" id="btn-enrich">Enrich &amp; import</button>
+      <button id="btn-enrich-import">Resume latest import</button>
       <button id="btn-enrich-stats">Enrichment stats</button>
     </div>
+    <p class="note">Keeps this page open while Apify runs. If the browser closes or a request fails, use Resume latest import; completed pages are saved.</p>
     <p class="note" id="enrich-cost">About $1.30 per 1,000 profiles, so 100 costs about $0.13 and all 10,857 about $14.11.</p>
   </div>
 
@@ -235,6 +269,8 @@ function h(?string $s): string
 
 <script>
 const out = document.getElementById('out');
+const enrichProgress = document.getElementById('enrich-progress');
+const enrichProgressMessage = document.getElementById('enrich-progress-message');
 
 function log(text) {
   const stamp = new Date().toLocaleTimeString();
@@ -253,7 +289,58 @@ async function call(params) {
 }
 
 function busy(state) {
-  document.querySelectorAll('button').forEach(b => { b.disabled = state; });
+  // An actor can keep billing while this page waits, so Abort must stay usable.
+  document.querySelectorAll('button').forEach(b => {
+    if (b.id !== 'btn-abort') { b.disabled = state; }
+  });
+}
+
+function setEnrichProgress(visible, message) {
+  enrichProgress.hidden = !visible;
+  if (message) { enrichProgressMessage.textContent = message; }
+}
+
+const TERMINAL_RUN_STATUSES = new Set(['SUCCEEDED', 'FAILED', 'ABORTED', 'TIMED-OUT']);
+
+function pause(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+// Apify runs asynchronously. Keep that boundary in the API so imports remain
+// resumable, while presenting one normal "enrich and import" action in the UI.
+async function waitForRun(runId) {
+  for (;;) {
+    const body = await call({ action: 'status', run: runId });
+    const run = body.run;
+    log('Enrichment run ' + run.id + ' is ' + run.status + '.');
+    setEnrichProgress(true, 'Apify is ' + run.status + '. Keep this tab open.');
+    if (!TERMINAL_RUN_STATUSES.has(run.status)) {
+      await pause(5000);
+      continue;
+    }
+    if (run.status !== 'SUCCEEDED') {
+      throw new Error('Enrichment run ended as ' + run.status + '. Nothing was imported.');
+    }
+    return run;
+  }
+}
+
+async function importRunUntilDone(runId) {
+  let total = 0;
+  for (;;) {
+    const params = { action: 'import-all', seconds: 60 };
+    if (runId !== undefined) { params.run = runId; }
+    const body = await call(params);
+    total += body.imported;
+    log('Imported +' + body.imported + ' (running total ' + total +
+        ', cursor ' + body.run.cursor_offset + ').');
+    setEnrichProgress(true, 'Importing profiles: ' + total + ' imported in this session. Keep this tab open.');
+    if (body.errors.length) { log('Actor reported: ' + body.errors.join(', ')); }
+    if (body.done) {
+      log('Import finished. ' + total + ' rows imported.');
+      return body;
+    }
+  }
 }
 
 function startParams() {
@@ -335,32 +422,28 @@ document.getElementById('btn-enrich').addEventListener('click', async () => {
   const cost = (parseInt(n, 10) || 0) * 0.0013;
   if (!confirm('Enrich ' + n + ' profiles? Roughly $' + cost.toFixed(2) + '.')) { return; }
   busy(true);
+  setEnrichProgress(true, 'Starting Apify. Keep this tab open while it runs and profiles are imported.');
   try {
     const body = await call({ action: 'enrich', n: n, public: pub });
     log('Enrichment run ' + body.run.id + ' started (Apify ' + body.run.apify_run_id + '), ' +
         body.requested + ' profiles, about $' + body.estimated_cost_usd +
-        '. Wait a moment, then Import until done.');
+        '. Waiting for Apify, then importing automatically.');
+    await waitForRun(body.run.id);
+    await importRunUntilDone(body.run.id);
   } catch (e) {
-    log('ERROR ' + e.message);
+    log('ERROR ' + e.message + ' — use Resume latest import after the run succeeds.');
   } finally {
+    setEnrichProgress(false);
     busy(false);
   }
 });
 
 document.getElementById('btn-enrich-import').addEventListener('click', async () => {
   busy(true);
-  let total = 0, pages = 0;
   try {
-    for (;;) {
-      const body = await call({ action: 'import' });
-      total += body.batch.imported;
-      pages += 1;
-      log('Page ' + pages + ': +' + body.batch.imported + ' (running total ' + total + ')');
-      if (body.batch.done) { break; }
-    }
-    log('Import finished. ' + total + ' rows over ' + pages + ' pages.');
+    await importRunUntilDone();
   } catch (e) {
-    log('ERROR ' + e.message + ' — the cursor is saved, press this again to resume.');
+    log('ERROR ' + e.message + ' — the cursor is saved, press Resume latest import again.');
   } finally {
     busy(false);
   }

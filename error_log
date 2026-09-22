@@ -1,0 +1,22 @@
+[21-Sep-2026 10:11:39 America/New_York] PHP Fatal error:  Uncaught PDOException: SQLSTATE[HY000] [2002] Operation not permitted in /home/bizousoft/public_html/seo/ig-follower-scraper/src/Db.php:26
+Stack trace:
+#0 /home/bizousoft/public_html/seo/ig-follower-scraper/src/Db.php(26): PDO->__construct('mysql:host=loca...', 'bizousoft_ig-fo...', 'PHrJ-o%#lldWiEm...', Array)
+#1 /home/bizousoft/public_html/seo/ig-follower-scraper/src/Db.php(38): Db::pdo()
+#2 Command line code(1): Db::one('SELECT id, kind...', Array)
+#3 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/src/Db.php on line 26
+[21-Sep-2026 14:14:36 UTC] PHP Warning:  stream_socket_server(): Unable to connect to tcp://127.0.0.1:0 (Success) in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 59
+[21-Sep-2026 14:14:36 UTC] PHP Fatal error:  Uncaught RuntimeException: Cannot reserve a local test port: Success in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php:61
+Stack trace:
+#0 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 61
+[21-Sep-2026 14:19:11 UTC] PHP Warning:  stream_socket_server(): Unable to connect to tcp://127.0.0.1:0 (Success) in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 59
+[21-Sep-2026 14:19:11 UTC] PHP Fatal error:  Uncaught RuntimeException: Cannot reserve a local test port: Success in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php:61
+Stack trace:
+#0 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 61
+[21-Sep-2026 14:25:32 UTC] PHP Warning:  stream_socket_server(): Unable to connect to tcp://127.0.0.1:0 (Success) in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 59
+[21-Sep-2026 14:25:32 UTC] PHP Fatal error:  Uncaught RuntimeException: Cannot reserve a local test port: Success in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php:61
+Stack trace:
+#0 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 61

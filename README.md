@@ -59,7 +59,9 @@ until SUCCEEDED, then **Import until done**.
 `ig_profile_stats`.
 
 Dashboard: the **Enrich profiles** panel. Set how many, choose whether to skip private accounts,
-press **Start enrichment**, wait, then **Import until done**.
+press **Enrich & import** and leave the page open. It waits for Apify to finish, then imports the
+dataset automatically. **Resume latest import** is only for recovery after the browser closes or a
+request fails.
 
 ```
 ?action=enrich&n=2400[&public=1]
@@ -427,9 +429,11 @@ The followers actor returns list membership only. Follower counts, post counts, 
 flags come from a second actor, `memo23/instagram-followers-count-scraper`, billed separately at
 about $1.30 per 1,000 profiles.
 
-From the dashboard: set a count, choose whether to skip private accounts, press **Start enrichment**,
-wait, then **Import until done**. It only ever picks accounts that have no stats yet, so pressing it
-repeatedly walks through the queue without re-paying for anyone.
+From the dashboard: set a count, choose whether to skip private accounts, then press
+**Enrich & import**. Keep the page open while Apify runs; it imports automatically when the run
+succeeds. If the browser closes or a request fails, **Resume latest import** continues from the
+saved cursor. It only ever picks accounts that have no stats yet, so each new enrichment run walks
+through the queue without re-paying for anyone.
 
 Endpoints: `?action=enrich&n=100[&public=1]` and `?action=enrich-stats`.
 
