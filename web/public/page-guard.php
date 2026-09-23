@@ -15,13 +15,19 @@
 declare(strict_types=1);
 
 $guardPage = basename($_SERVER['SCRIPT_NAME'] ?? 'index.php');
+$guardReturnPath = (string) ($_SERVER['REQUEST_URI'] ?? '');
+if (!str_starts_with($guardReturnPath, '/') || str_starts_with($guardReturnPath, '//')) {
+    $guardReturnPath = '/' . $guardPage;
+}
 
 $guardUser = Auth::user();
 
 if ($guardUser === null) {
     // Reuse the parent login for external auth, or the local builtin form.
     if (in_array(Auth::provider(), ['external', 'builtin'], true)) {
-        header('Location: ' . Auth::loginUrl($guardPage));
+        header('Location: ' . Auth::loginUrl(
+            Auth::provider() === 'external' ? $guardReturnPath : $guardPage
+        ));
         exit;
     }
 

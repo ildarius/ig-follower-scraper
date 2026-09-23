@@ -102,9 +102,21 @@ final class Auth
 
     public static function loginUrl(string $next = 'accounts.php'): string
     {
-        return self::provider() === 'external'
-            ? (string) Config::get('auth.external_login_url', '/login.php')
-            : 'login.php?next=' . rawurlencode(basename($next));
+        if (self::provider() === 'external') {
+            $loginUrl = (string) Config::get('auth.external_login_url', '/login.php');
+
+            // The parent login accepts only root-relative, same-site return
+            // paths. Passing one preserves the page that initiated sign-in
+            // without turning this endpoint into an open redirect.
+            if (str_starts_with($next, '/') && !str_starts_with($next, '//')) {
+                $loginUrl .= (str_contains($loginUrl, '?') ? '&' : '?')
+                    . 'next=' . rawurlencode($next);
+            }
+
+            return $loginUrl;
+        }
+
+        return 'login.php?next=' . rawurlencode(basename($next));
     }
 
     public static function logoutUrl(): string
