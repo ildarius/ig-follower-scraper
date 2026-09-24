@@ -314,7 +314,11 @@ if they are parent-site admins. Legacy parent sessions without `app_user` also n
 email mapping. With an empty map, the recognised parent roles apply.
 
 Signed-out HTML requests redirect to `/login.php`; API requests return `401` JSON with that login
-URL. Both browser pages navigate to login when an API request reports an expired session.
+URL. Both browser pages navigate to login when an API request reports an expired session. The
+shared session is a Secure, HttpOnly, SameSite=Strict 400-day sliding cookie: each valid scraper
+request renews it, and PHP retains the matching server-side session for the same period. Set
+`auth.external_session_lifetime` to change this duration (and keep it aligned with the parent
+site's session policy).
 `web/public/login.php?logout=1` redirects to the parent's `/logout.php`. Override
 `auth.external_login_url`, `auth.external_logout_url`, and `auth.external_session_name` if the
 host uses different paths or a different session name. Shared cookies retain Secure, HttpOnly,

@@ -83,8 +83,14 @@ return [
         // These settings apply only to the separate builtin login session.
         'session_name' => 'igfs',
 
-        // 0 means the cookie expires when the browser closes.
-        'session_lifetime' => 0,
+        // Sliding inactivity window for the builtin-login cookie and its
+        // server-side session. 400 days is the practical browser maximum;
+        // set 0 only when browser-close expiry is required.
+        'session_lifetime' => 34560000,
+
+        // The parent PHPSESSID uses the same 400-day sliding window. This must
+        // match the parent site's session policy when provider is 'external'.
+        'external_session_lifetime' => 34560000,
 
         // Sends the session cookie only over HTTPS. Set to false only to test
         // over plain HTTP on the PC, never on the remote host.

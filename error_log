@@ -30,3 +30,18 @@ Stack trace:
 #0 /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php(123): expect('index.php uses ...', '/login.php?next...', '/login.php')
 #1 {main}
   thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 23
+[24-Sep-2026 17:32:39 UTC] PHP Fatal error:  Uncaught RuntimeException: index.php uses parent login: got "\/login.php?next=%2Fweb%2Fpublic%2Findex.php", expected "\/login.php" in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php:23
+Stack trace:
+#0 /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php(123): expect('index.php uses ...', '/login.php?next...', '/login.php')
+#1 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 23
+[24-Sep-2026 17:32:44 UTC] PHP Fatal error:  Uncaught RuntimeException: index.php uses parent login: got "\/login.php?next=%2Fweb%2Fpublic%2Findex.php", expected "\/login.php" in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php:23
+Stack trace:
+#0 /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php(123): expect('index.php uses ...', '/login.php?next...', '/login.php')
+#1 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 23
+[24-Sep-2026 17:33:04 UTC] PHP Fatal error:  Uncaught RuntimeException: index.php uses parent login: got "\/login.php?next=%2Fweb%2Fpublic%2Findex.php", expected "\/login.php" in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php:23
+Stack trace:
+#0 /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php(123): expect('index.php uses ...', '/login.php?next...', '/login.php')
+#1 {main}
+  thrown in /home/bizousoft/public_html/seo/ig-follower-scraper/tests/web-auth-test.php on line 23

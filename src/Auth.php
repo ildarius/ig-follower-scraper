@@ -29,6 +29,7 @@ final class Auth
 {
     public const ROLE_ADMIN    = 'admin';
     public const ROLE_OPERATOR = 'operator';
+    private const DEFAULT_SESSION_LIFETIME = 34560000; // 400 days
 
     public const ROLES = [self::ROLE_ADMIN, self::ROLE_OPERATOR];
 
@@ -206,6 +207,8 @@ final class Auth
     private static function externalIdentity(): ?array
     {
         $name = (string) Config::get('auth.external_session_name', 'PHPSESSID');
+        $lifetime = self::sessionLifetime('external_session_lifetime');
+        ini_set('session.gc_maxlifetime', (string) $lifetime);
         if (session_status() === PHP_SESSION_ACTIVE) {
             if (session_name() !== $name) {
                 return null;
@@ -219,7 +222,7 @@ final class Auth
             session_name($name);
             session_id($id);
             session_set_cookie_params([
-                'lifetime' => 0,
+                'lifetime' => $lifetime,
                 'path'     => '/',
                 'secure'   => true,
                 'httponly' => true,
@@ -265,6 +268,11 @@ final class Auth
         if (!is_string($role) || !in_array($role, self::ROLES, true)) {
             return null;
         }
+
+        // The scraper may be the only page a signed-in person uses for a
+        // while. Renew the shared cookie here as well, so its expiry slides on
+        // legitimate scraper activity instead of only parent-dashboard use.
+        self::renewExternalSessionCookie($name, $lifetime);
 
         return ['username' => $email, 'role' => $role];
     }
@@ -369,10 +377,12 @@ final class Auth
             return;
         }
 
+        $lifetime = self::sessionLifetime('session_lifetime');
+        ini_set('session.gc_maxlifetime', (string) $lifetime);
         session_name((string) Config::get('auth.session_name', 'igfs'));
 
         session_set_cookie_params([
-            'lifetime' => (int) Config::get('auth.session_lifetime', 0),
+            'lifetime' => $lifetime,
             'path'     => '/',
             'domain'   => '',
             'secure'   => (bool) Config::get('auth.cookie_secure', true),
@@ -382,6 +392,38 @@ final class Auth
 
         session_start();
 
+        // Renew an existing cookie too, making the configured lifetime a
+        // sliding inactivity window rather than a fixed deadline after login.
+        if ($lifetime > 0) {
+            setcookie(session_name(), session_id(), [
+                'expires'  => time() + $lifetime,
+                'path'     => '/',
+                'secure'   => (bool) Config::get('auth.cookie_secure', true),
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]);
+        }
+
         self::$sessionStarted = true;
+    }
+
+    private static function sessionLifetime(string $key): int
+    {
+        return max(0, (int) Config::get('auth.' . $key, self::DEFAULT_SESSION_LIFETIME));
+    }
+
+    private static function renewExternalSessionCookie(string $name, int $lifetime): void
+    {
+        if ($lifetime <= 0) {
+            return;
+        }
+
+        setcookie($name, session_id(), [
+            'expires'  => time() + $lifetime,
+            'path'     => '/',
+            'secure'   => true,
+            'httponly' => true,
+            'samesite' => 'Strict',
+        ]);
     }
 }
