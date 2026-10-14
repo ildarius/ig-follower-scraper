@@ -4,7 +4,14 @@ One-time Apify scrape of an Instagram account's follower list into MySQL, writte
 
 The first target is **@american_kratom_assoc** (12.4K followers as of 2026-09-16). The rows it
 produces are the follow queue for the
-[instagram-follower](../instagram-follower/README.md) Playwright script.
+[instagram-follower](instagram-follower/README.md) Playwright script, which lives in the
+`instagram-follower/` subfolder of this repository.
+
+**Two programs, one repository.** The PHP app at the root of this folder builds the queue and runs on
+the VPS (seo.bizousoft.com). The Node script in `instagram-follower/` works through that queue in
+Chrome and follows the accounts. It runs **only on Ildar's Windows PC**, from PowerShell, and refuses
+to start anywhere else, including the VPS copy of this repository. Until 2026-10-14 the script was a
+separate folder, `Sunny Kratom\instagram-follower\`, outside version control.
 
 **Actor:** [apify/instagram-followers-following-scraper](https://apify.com/apify/instagram-followers-following-scraper)
 **Cost:** $1.15 per 1,000 profiles. 12,400 followers is about $14.26.
@@ -12,6 +19,10 @@ produces are the follow queue for the
 **Progress / resume file:** [ig-follower-scraper-progress.md](ig-follower-scraper-progress.md)
 
 ---
+
+## Quick access from Ubuntu
+
+`$ cd "/mnt/c/Users/ildar/Claude/All projects/Sunny Kratom/ig-follower-scraper"`
 
 ## Operator guide
 
@@ -242,6 +253,7 @@ Ildar can also run everything from PowerShell with `cli.php`, which has no reque
 | `web/public/api.php` | JSON endpoint behind both pages. Authenticates and checks the role on every request. |
 | `tests/auth-acl-test.php` | Authentication and role tests. Needs no database and no `config.php`. |
 | `tests/web-auth-test.php` | HTTP tests with a temporary app copy and synthetic sessions. |
+| `instagram-follower/` | The follow script (Node + Playwright). Runs on the PC only, never on the VPS. Blocked from the web by `.htaccess`. Its own [README](instagram-follower/README.md), progress file, `.env` and tests. |
 
 Endpoints: `?action=` `start`, `status`, `import`, `import-all`, `abort`, `stats`, `queue`, `log`,
 `enrich`, `enrich-stats`, `raw`, `probe`, `migrate`, `reset-cursor`, `dump`, `accounts-search`,
@@ -273,11 +285,13 @@ The PHP application was already portable: every path derives from `__DIR__`, `co
 `data/` sit above the docroot, and all connection settings are config-driven. The access control was
 not portable, and has been replaced. See [Authentication and roles](#authentication-and-roles).
 
-`instagram-follower.js` stays on the PC. It depends on an aged, signed-in Chrome profile and a
-residential Quebec address, and moving that session to a datacenter address is a common trigger for
-an Instagram checkpoint. It reads its database settings from `.env`, so it drives the remote MySQL
-while continuing to run locally. The changes that made that safe are in that script's own
-[README](../instagram-follower/README.md).
+`instagram-follower/instagram-follower.js` stays on the PC. It depends on an aged, signed-in Chrome
+profile and a residential Quebec address, and moving that session to a datacenter address is a
+common trigger for an Instagram checkpoint. It opens its own SSH tunnel to the VPS and reads and
+writes the queue through it, while continuing to run locally. Because the `instagram-follower/`
+folder is deployed to the VPS along with the rest of this repository, the script checks where it is
+running and refuses to start on the VPS. Details are in that script's own
+[README](instagram-follower/README.md).
 
 ## Authentication and roles
 

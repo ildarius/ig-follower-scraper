@@ -4,7 +4,9 @@ Options -Indexes
 
 RewriteEngine On
 RewriteRule ^$ %{REQUEST_URI}web/public/accounts.php [R=302,L]
-RewriteRule ^(?:src|data|sql|tests|\.git|\.agents|\.codex)(?:/|$) - [F,L]
+# instagram-follower/ is the Instagram follow script. It runs on Ildar's PC only and
+# holds its own .env, so nothing in it may be served from the VPS.
+RewriteRule ^(?:src|data|sql|tests|instagram-follower|\.git|\.agents|\.codex)(?:/|$) - [F,L]
 
 <FilesMatch "(?i)^(?:config(?:\.example)?\.php|bootstrap\.php|cli\.php|page-guard\.php|error_log)$|\.(?:md|markdown|ini|log|sql|gz|gitignore)$">
     Require all denied

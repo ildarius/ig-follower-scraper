@@ -1,0 +1,17 @@
+{
+  "name": "instagram-follower",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Instagram warm-up and follow automation for @verifiedbotanicals, queue in MySQL.",
+  "main": "instagram-follower.js",
+  "scripts": {
+    "login": "node instagram-follower.js --login",
+    "dry-run": "node instagram-follower.js --dry-run",
+    "follow": "node instagram-follower.js"
+  },
+  "dependencies": {
+    "playwright": "^1.60.0",
+    "mysql2": "^3.11.0",
+    "dotenv": "^16.4.5"
+  }
+}

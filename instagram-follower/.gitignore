@@ -1,0 +1,13 @@
+node_modules/
+.env
+run-log.jsonl
+run-screenshots/
+pending-writes.jsonl
+tests/node_modules/
+
+# Old versions of the script, kept on disk only. Git history replaces them once
+# this folder is committed.
+archive/
+
+# Created by Google Drive in every folder.
+desktop.ini

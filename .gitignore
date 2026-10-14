@@ -8,3 +8,6 @@ data/*.sql.gz
 # Logs and run artefacts.
 *.log
 run-screenshots/
+
+# Created by Google Drive in every folder.
+desktop.ini

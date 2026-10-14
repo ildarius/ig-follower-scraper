@@ -31,7 +31,7 @@ The private `config.php` is still absent on this host, so database/Apify operati
 | 3. Deploy the PHP application | **Blocked on the VPS existing.** |
 | 4. Replace the localhost guard | **Done.** `src/Auth.php`, `web/public/login.php`, `web/public/page-guard.php`, and the guard at the top of `api.php`. |
 | 5. Role allowlist | **Done.** `src/Acl.php`, the check above the `switch` in `api.php`, and the 500-row cap in `AccountsBrowser::bulk()`. |
-| 6. Point the follow script at the remote database | **Done in the script.** Retry, keepalive, TLS option and the write journal are all in `instagram-follower.js`. Not yet exercised against a real remote database, because there is not one yet. |
+| 6. Point the follow script at the remote database | **Done in the script.** Retry, keepalive and the write journal are in `instagram-follower.js`. 2026-10-13: the script now opens its own SSH tunnel and can only use the VPS database; the Laragon defaults and the TLS option were removed. See the 2026-10-13 section of `instagram-follower/instagram-follower-progress.md`. Not yet exercised against the real VPS database. |
 | 7. Verify end to end | **Blocked on steps 1, 2 and 3.** |
 
 ## What was changed
@@ -126,3 +126,5 @@ Compare the row counts the two report before moving anything.
 - 2026-09-20: read the hand-off, the spec and the codebase. Recorded the five decisions.
 - 2026-09-20: steps 4, 5 and the script half of step 6 written and tested. Documentation updated
   across both projects. Steps 1, 2, 3 and 7 remain, and all four need either the PC or the VPS.
+- 2026-10-13: follow script made remote-only (own SSH tunnel, server identity guard, no Laragon defaults).
+- 2026-10-14: follow script moved into this repository as `instagram-follower/`. It refuses to start on the VPS; `.htaccess` blocks the folder from the web.
