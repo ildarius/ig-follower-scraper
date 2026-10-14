@@ -1,5 +1,86 @@
 # Instagram follower (Verified Botanicals)
 
+## Quickstart guide
+
+**Shell: PowerShell.** Not Ubuntu. The script drives the Windows Chrome profile at
+`C:\chrome-automation-profile` and opens its database tunnel with Windows `ssh.exe`, and it refuses
+to start anywhere else.
+
+### Daily run
+
+```powershell
+cd "C:\Users\ildar\Claude\All projects\Sunny Kratom\ig-follower-scraper\instagram-follower"
+node instagram-follower.js --check-db
+node instagram-follower.js --follows 25
+```
+
+`--check-db` confirms the script reaches the VPS database (`bizousoft_ig_analytics` on
+`66-206-23-226.boulat.net`) and prints the queue counts. It opens no browser. The second command is
+the follow run, in a visible Chrome window.
+
+Leave out `--cooldown-min` and `--cooldown-max` on daily runs. The default wait between follows is a
+random 3 to 5 minutes, about 15 follows an hour, with a 2 to 4 action warm-up before the first
+follow. 25 follows take about 1.3 to 2.1 hours (24 waits of 3 to 5 minutes, plus about 6 minutes
+for the follows and the warm-up); 100 take about 6.5 to 7.5 hours.
+
+### Follows per day while ramping up
+
+`--follows N` counts only real Follow clicks. Accounts already followed, already requested, or not
+found are passed over without counting.
+
+| Day | Date | Command |
+|---|---|---|
+| 1 | 2026-10-14 | `node instagram-follower.js --follows 25` |
+| 2 | 2026-10-15 | `node instagram-follower.js --follows 35` |
+| 3 | 2026-10-16 | `node instagram-follower.js --follows 45` |
+| 4 | 2026-10-17 | `node instagram-follower.js --follows 55` |
+| 5 | 2026-10-18 | `node instagram-follower.js --follows 65` |
+| 6 | 2026-10-19 | `node instagram-follower.js --follows 75` |
+| 7 | 2026-10-20 | `node instagram-follower.js --follows 85` |
+| 8 | 2026-10-21 | `node instagram-follower.js --follows 95` |
+| 9 onward | 2026-10-22 | `node instagram-follower.js --follows 100` |
+
+The ramp follows "Rate limit risk at 100 follows per day" below: start at 20 to 30, add about 10 a day. If a day is skipped, continue
+from the last number run rather than from the date. One run a day.
+
+### If something goes wrong
+
+| What you see | What to do |
+|---|---|
+| Exit code `2`, or `ACTION BLOCKED` in the summary | Instagram blocked follows. Stop for the day; do not rerun. Recommendation: the next day, repeat the previous day's number instead of increasing it. |
+| `!! COULD NOT RECORD THE FOLLOW ...` | The database was unreachable when a follow finished. Run `node instagram-follower.js --replay-journal` once the connection is back. |
+| `Chrome ... is not signed in to Instagram` | Run `node instagram-follower.js --login`, sign in as @verifiedbotanicals in the window, press Ctrl+C, rerun. |
+| `ssh tunnel process ended (...)` during a run | The tunnel dropped. The script reopens it on the next database call; nothing to do unless it keeps repeating. |
+| `TUNNEL_FAILED` at startup | Run `ssh -p 22222 bizousoft@66.206.23.226 "echo key-login-ok"`. It must print `key-login-ok` without asking for a password. |
+| The run stops with no summary | Read the `EXIT` line it printed, or the last `exit` entry in `run-log.jsonl`, and tell Claude what it says. |
+| `could not attach to or start Chrome` | Close any Chrome window using `C:\chrome-automation-profile`, and make sure the Record scheduler is not running (same profile, same port 9222). |
+| `STOP. instagram-follower.js only runs on Ildar's Windows PC` | You are in Ubuntu or on the VPS. Use PowerShell on the PC. |
+
+Ctrl+C stops a run at any time. Every finished follow is already saved; a rerun continues from the
+next pending account.
+
+### Short test run
+
+For checking a change, not for daily use: three named accounts, no warm-up, 30 to 60 second waits.
+The quotes around the list are required in PowerShell, which otherwise splits it at the commas.
+
+```powershell
+node instagram-follower.js --only "user1,user2,user3" --follows 3 --no-warmup --cooldown-min 30 --cooldown-max 60
+```
+
+Add `--dry-run` to click nothing and write nothing.
+
+### One-time setup (done 2026-10-14, for reference)
+
+- `.env` holds `DB_NAME`, `DB_USER`, `DB_PASS` from the VPS `config.php`, and `DB_SSH_USER=bizousoft`,
+  `DB_SSH_PORT=22222`. A password containing `#` must be in single quotes.
+- The PC's `C:\Users\ildar\.ssh\id_ed25519.pub` is in the server's `~/.ssh/authorized_keys`, so the
+  tunnel opens without a password.
+- `127.0.0.1` is in cPanel's Remote Database Access list, so MySQL accepts the tunnel's connection.
+- `npm install` in this folder, if `node_modules` is missing.
+
+---
+
 A Node + Playwright warm-up and follow script for the @verifiedbotanicals Instagram account. It
 drives a real signed-in Chrome window, performs ordinary browsing actions (stories, feed scrolling,
 likes, profile and comment reading), and follows accounts from a MySQL queue on a 3 to 5 minute
@@ -17,7 +98,7 @@ other traffic in it, which is the pattern Instagram's rate limiter is looking fo
 folder exists there too. The script refuses to start there; see "Where the script may run" below.
 **Progress / resume file:** [instagram-follower-progress.md](instagram-follower-progress.md)
 **Verified selectors:** [instagram-selectors-notes.md](instagram-selectors-notes.md)
-**Status 2026-09-17:** script written and syntax-clean. Not yet run against Instagram.
+**Status 2026-10-14:** running against the VPS database. Follow-button fix verified live; ramp-up starts 2026-10-14 at 25 follows.
 
 ---
 
@@ -130,7 +211,7 @@ Columns this script touches:
 | `username` | Instagram handle without the `@`. |
 | `follow_status` | `pending` when queued. Written by this script: `followed`, `requested`, `already_following`, `error`, or `skipped`. |
 | `follow_attempted_at` | Timestamp of the attempt, `YYYY-MM-DD HH:MM:SS` in America/New_York, written on both success and failure. |
-| `follow_note` | Empty on success. On `error`, the reason: `profile not found`, `follow button not found`, `action blocked`, `timeout`, or the raw error text. |
+| `follow_note` | Empty on success. On `error`, the reason: `profile not found` (Instagram's "Sorry, this page isn't available."), `no follow button after 15s; header buttons: ...` (the page loaded but showed no follow-state button, with the buttons it did show), `action blocked`, or the raw error text. |
 
 Rules:
 
@@ -233,6 +314,10 @@ Use `LEFT JOIN` with `s.id IS NULL OR s.posts_count > 0` instead if the script s
 unenriched accounts rather than stopping.
 
 ### Why the script may open accounts you already follow
+
+**Fix, 2026-10-14:** scrape @verifiedbotanicals' own following list with Apify and mark every match
+as `already_following` before running. Steps are in the Quickstart guide of the
+[repository README](../README.md). What follows explains why the problem exists.
 
 The queue is ordered by `id`, which is the order Apify returned AKA's follower list. Manual following
 was done against that same list in roughly the same order, so the top of the queue is largely made up
@@ -352,12 +437,14 @@ the run to the local copy without any error.
 The script now has one database path and no settings that can point it anywhere else.
 
 1. **It opens its own SSH tunnel.** `ensureTunnel()` starts
-   `ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:3307:127.0.0.1:3306 root@66.206.23.226`
-   and waits up to 90 seconds for the local port to answer. `ExitOnForwardFailure` makes ssh exit
-   when it cannot bind the port, instead of staying connected with no forward. ssh shares the
-   script's console, so a password prompt appears there if no key is set up. If the port already
-   answers, for example because a tunnel was opened by hand in another window, it is used as it is.
-   The tunnel is closed when the script exits.
+   `ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -p 22222 -L 127.0.0.1:3307:127.0.0.1:3306 bizousoft@66.206.23.226`
+   and waits up to 30 seconds for the local port to answer. `ExitOnForwardFailure` makes ssh exit
+   when it cannot bind the port, instead of staying connected with no forward. `BatchMode=yes`
+   means key login only: ssh never prompts, and fails with its own message if the key is refused.
+   ssh runs detached, in its own hidden console window (changed 2026-10-14, see "Silent stops"
+   below). If the port already answers, for example because a tunnel was opened by hand in another
+   window or a previous run's ssh outlived it, it is used as it is. The tunnel is closed when the
+   script exits.
 2. **The host and port are fixed.** MySQL is always reached at `127.0.0.1:<DB_TUNNEL_LOCAL_PORT>`,
    the local end of that tunnel. `DB_HOST`, `DB_PORT` and the old `DB_SSL*` settings are ignored,
    with a warning if they are still in `.env`. `DB_TUNNEL_LOCAL_PORT` defaults to 3307, and 3306 is
@@ -378,9 +465,25 @@ The server's hostname, database and MySQL version are printed in the startup ban
 prints into `DB_EXPECT_SERVER_HOSTNAME` to pin the script to that exact server.
 
 A tunnel that drops during a run is error `TUNNEL_FAILED`, which `withDbRetry()` treats like any other
-dropped connection: the pool is discarded and the next attempt reopens the tunnel. With a password
-instead of a key, that reopening needs someone at the keyboard within 90 seconds, so set up a key for
-unattended runs and point `DB_SSH_KEY` at it if it is not the default key.
+dropped connection: the pool is discarded and the next attempt reopens the tunnel, with the key and
+without a prompt. Point `DB_SSH_KEY` at the key if it is not `C:\Users\ildar\.ssh\id_ed25519`.
+
+### Silent stops, and what is logged now
+
+On 2026-10-14 two runs ended with no error and no summary: one at 13:37 after 6 of 25 follows, one at
+14:51 while waiting for the tunnel. Neither was stopped by hand. At the time ssh shared the
+PowerShell window with the script, and a console passes Ctrl+C and close events to every process
+attached to it. That is the most likely cause, though it was not proven. Two changes followed:
+
+1. ssh runs detached in its own hidden console, so nothing it does reaches this process through the
+   console.
+2. Every way the process can end now prints an `EXIT` line and writes an `exit` entry to
+   `run-log.jsonl`: finished, action blocked, stopped (any error), Ctrl+C, Ctrl+Break, console
+   window closed, terminated, uncaught exception, unhandled rejection. The ssh process ending is
+   logged too, as `ssh tunnel process ended` and a `tunnel-exit` entry, with its last error output.
+
+If a run ever stops without an `EXIT` line, the process was killed from outside (Task Manager, a
+crash of Node itself, or the PC sleeping).
 
 The SSH tunnel also encrypts the traffic. `mysql2` connects in the clear by default, and MySQL on the
 VPS never has to be exposed to the internet. The direct TLS connection that used to be the fallback
@@ -413,7 +516,7 @@ server.
 | Flag | Effect |
 |---|---|
 | `--login` | Opens Chrome and holds it open so Ildar can sign in by hand. Ctrl+C when done. |
-| `--dry-run` | Does every navigation and every filler action, but never clicks Follow or Like and never writes to MySQL. |
+| `--dry-run` | Does every navigation and every filler action, but never clicks Follow or Like and never writes to MySQL. Because nothing is written, it remembers which accounts it has opened and passes over them, so each pick is a different account (fixed 2026-10-14; before that a dry run reopened the first pending account every time). |
 | `--follows N` | Stop after N follow attempts that consumed a cooldown. Default 100. |
 | `--max-minutes N` | Also stop after N minutes, whichever comes first. For a short supervised run. |
 | `--min-followers N` | **Default 50.** Only follow accounts with at least N followers. Requires enrichment data, so this restricts the queue to accounts in `ig_profile_stats`. `--min-followers 0` disables it and lets unenriched accounts back in. |

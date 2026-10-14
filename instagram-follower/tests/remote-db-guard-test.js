@@ -49,6 +49,48 @@ if (ma < 0 || mb < 0 || mb < ma) {
 }
 const wrongMachineReasons = new Function(source.slice(ma, mb) + '\nreturn wrongMachineReasons;')();
 
+// Profile detection: findFollowButton and waitForProfile. The wait is cut from
+// 15 s to 3 s so the timeout case does not slow the suite down.
+const P_START = "const FOLLOW_STATE_LABELS = new Set(";
+const P_END = '/**\n * Follow the next queued account.';
+const pa = source.indexOf(P_START);
+const pb = source.indexOf(P_END);
+if (pa < 0 || pb < 0 || pb < pa) {
+  console.error('Could not find the profile detection section in instagram-follower.js. Markers moved?');
+  process.exit(1);
+}
+const profileSection = source.slice(pa, pb).replace('const PROFILE_WAIT_MS = 15000;', 'const PROFILE_WAIT_MS = 3000;');
+if (!profileSection.includes('const PROFILE_WAIT_MS = 3000;')) {
+  console.error('PROFILE_WAIT_MS not found where expected.');
+  process.exit(1);
+}
+const { waitForProfile } = new Function('sleep',
+  profileSection + '\nreturn { findFollowButton, waitForProfile };')((ms) => new Promise((r) => setTimeout(r, ms)));
+
+/**
+ * A stand-in for a Playwright page. `stages` is a list of { after, buttons },
+ * the header button texts present from `after` ms onwards. `missingAfter` is
+ * when the "Sorry, this page isn't available." text appears, or null.
+ */
+function fakeProfilePage(stages, missingAfter = null) {
+  const t0 = Date.now();
+  const current = () => {
+    const el = Date.now() - t0;
+    let b = [];
+    for (const st of stages) if (el >= st.after) b = st.buttons;
+    return b;
+  };
+  return {
+    locator: () => ({
+      count: async () => current().length,
+      nth: (i) => ({ innerText: async () => current()[i] }),
+    }),
+    getByText: () => ({
+      count: async () => (missingAfter !== null && Date.now() - t0 >= missingAfter ? 1 : 0),
+    }),
+  };
+}
+
 let fails = 0;
 function check(name, actual, expected) {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -141,6 +183,31 @@ const linux = { hostname: 'vps-bizousoft', compile_os: 'Linux', datadir: '/var/l
     check('missing interfaces handled', wrongMachineReasons({ platform: 'win32', dir: 'C:\\x' }), []);
   }
 
+  console.log('== profile detection');
+  {
+    let r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: ['site.com and 1 more', 'Follow'] }]));
+    check('multi-link profile: Follow found after the links button', [r.state, r.found.label], ['ready', 'Follow']);
+
+    r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: [] }, { after: 1500, buttons: ['Following'] }]));
+    check('slow load is waited for, not called missing', [r.state, r.found.label], ['ready', 'Following']);
+
+    r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: [] }], 400));
+    check('missing profile text is recognised', r.state, 'missing');
+
+    r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: ['linktr.ee/x and 3 more'] }]));
+    check('no follow button times out', r.state, 'timeout');
+    check('timeout reports the buttons it saw', r.found.seen, ['linktr.ee/x and 3 more']);
+
+    r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: ['Follow back'] }]));
+    check('Follow back counts as Follow', r.found.label, 'Follow');
+
+    r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: ['Requested'] }]));
+    check('Requested recognised', r.found.label, 'Requested');
+
+    r = await waitForProfile(fakeProfilePage([{ after: 0, buttons: ['Followingg'] }]));
+    check('near-miss text is not accepted', r.state, 'timeout');
+  }
+
   console.log('== server guard accepts the VPS');
   {
     const m = load({ port: 1 });
@@ -185,12 +252,14 @@ const linux = { hostname: 'vps-bizousoft', compile_os: 'Linux', datadir: '/var/l
   {
     const port = await freePort();
     let args = null;
+    let opts = null;
     let srv = null;
     const m = load({
       port,
       key: 'C:\\Users\\ildar\\.ssh\\id_ed25519',
-      spawn: (exe, a) => {
+      spawn: (exe, a, o) => {
         args = a;
+        opts = o;
         const child = new EventEmitter();
         child.exitCode = null;
         child.signalCode = null;
@@ -201,6 +270,10 @@ const linux = { hostname: 'vps-bizousoft', compile_os: 'Linux', datadir: '/var/l
     });
     check('resolved once the port opens', await codeOf(m.ensureTunnel()), 'resolved');
     check('ExitOnForwardFailure set', args.includes('ExitOnForwardFailure=yes'), true);
+    check('BatchMode set, so ssh never prompts', args.includes('BatchMode=yes'), true);
+    check('ssh detached from this console', opts.detached, true);
+    check('ssh window hidden', opts.windowsHide, true);
+    check('ssh stdin not shared', opts.stdio[0], 'ignore');
     check('forward bound to 127.0.0.1 only', args[args.indexOf('-L') + 1], `127.0.0.1:${port}:127.0.0.1:3306`);
     check('key passed with -i', args[args.indexOf('-i') + 1], 'C:\\Users\\ildar\\.ssh\\id_ed25519');
     check('destination last', args[args.length - 1], 'root@66.206.23.226');
@@ -267,7 +340,11 @@ const linux = { hostname: 'vps-bizousoft', compile_os: 'Linux', datadir: '/var/l
   console.log('== startup');
   {
     const run = (env) => spawnSync(process.execPath, [SCRIPT, '--check-db'], {
-      env: { ...process.env, DB_NAME: '', DB_USER: '', DB_PASS: '', DB_TUNNEL_LOCAL_PORT: '', ...env },
+      env: {
+        ...process.env, DB_NAME: '', DB_USER: '', DB_PASS: '', DB_TUNNEL_LOCAL_PORT: '',
+        IG_FOLLOWER_RUN_LOG: path.join(os.tmpdir(), 'ig-follower-test-run-log.jsonl'),
+        ...env,
+      },
       encoding: 'utf8',
       timeout: 20000,
     });

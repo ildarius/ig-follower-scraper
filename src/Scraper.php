@@ -156,8 +156,16 @@ final class Scraper
                 'done'     => true,
                 'cursor'   => $offset,
                 'errors'   => [],
+                'marked_already_following' => 0,
             ];
         }
+
+        // A following list of our own account is not a list of targets. Every
+        // account in it is one we already follow, so it must never be inserted
+        // into ig_accounts as a new pending row. It only marks matching pending
+        // rows as already_following. See markAlreadyFollowing().
+        $ownFollowingRun = $this->isOwnFollowingRun($row);
+        $marked          = 0;
 
         $pdo = Db::pdo();
         $pdo->beginTransaction();
@@ -222,6 +230,18 @@ final class Scraper
                     continue;
                 }
 
+                if ($ownFollowingRun) {
+                    $marked += $this->markAlreadyFollowing($userId, (string) $row['source_username'], $runRowId, $now);
+                    $upsertRelation->execute([
+                        'source_username' => (string) $row['source_username'],
+                        'relation'        => 'FOLLOWING',
+                        'ig_user_id'      => $userId,
+                        'scraped_at'      => $now,
+                    ]);
+                    $imported++;
+                    continue;
+                }
+
                 $upsertAccount->execute([
                     'ig_user_id'      => $userId,
                     'username'        => $username,
@@ -279,7 +299,51 @@ final class Scraper
             'done'     => $fetched < $batchSize,
             'cursor'   => $offset + $fetched,
             'errors'   => array_values(array_unique($errors)),
+            'marked_already_following' => $marked,
         ];
+    }
+
+    /**
+     * True when this run scraped the FOLLOWING list of our own account, the one
+     * the follow script runs as (config 'own_account', default verifiedbotanicals).
+     *
+     * A following list of any other account keeps the old behaviour: its
+     * accounts are imported as pending rows, i.e. as possible targets.
+     */
+    public function isOwnFollowingRun(array $row): bool
+    {
+        $own = strtolower(ltrim((string) Config::get('own_account', 'verifiedbotanicals'), '@'));
+        return ($row['data_to_scrape'] ?? '') === 'following'
+            && strtolower(ltrim((string) ($row['source_username'] ?? ''), '@')) === $own;
+    }
+
+    /**
+     * Mark one queued account as already followed, because it appears in our own
+     * account's following list. Returns 1 if a row changed, 0 otherwise.
+     *
+     * Added 2026-10-14. Accounts followed by hand were never all recorded, so the
+     * follow script kept opening profiles only to find "Following" there. Doing
+     * this from the following list removes them from the queue without a visit.
+     *
+     * Only 'pending' rows change. followed, requested, already_following, error
+     * and skipped rows record something that happened, and stay as they are.
+     * Matching is by ig_user_id, which does not change when a username does.
+     */
+    public function markAlreadyFollowing(string $igUserId, string $sourceUsername, int $runRowId, string $now): int
+    {
+        return Db::run(
+            "UPDATE ig_accounts
+                SET follow_status       = 'already_following',
+                    follow_attempted_at = :attempted_at,
+                    follow_note         = :note
+              WHERE ig_user_id = :ig_user_id
+                AND follow_status = 'pending'",
+            [
+                'attempted_at' => $now,
+                'note'         => sprintf('in @%s following list, Apify run %d', ltrim($sourceUsername, '@'), $runRowId),
+                'ig_user_id'   => $igUserId,
+            ]
+        );
     }
 
     /**
@@ -294,11 +358,13 @@ final class Scraper
         $skipped  = 0;
         $batches  = 0;
         $errors   = [];
+        $marked   = 0;
 
         while (true) {
             $result = $this->importAny($runRowId);
             $imported += $result['imported'];
             $skipped  += $result['skipped'];
+            $marked   += (int) ($result['marked_already_following'] ?? 0);
             $errors    = array_values(array_unique(array_merge($errors, $result['errors'])));
             $batches++;
 
@@ -316,6 +382,7 @@ final class Scraper
             'skipped'  => $skipped,
             'batches'  => $batches,
             'errors'   => $errors,
+            'marked_already_following' => $marked,
         ];
     }
 

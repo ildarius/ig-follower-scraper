@@ -56,7 +56,9 @@ try { require('dotenv').config({ path: path.join(__dirname, '.env') }); } catch 
 
 const HERE = __dirname;
 const SHOTS_DIR = path.join(HERE, 'run-screenshots');
-const RUN_LOG = path.join(HERE, 'run-log.jsonl');
+// IG_FOLLOWER_RUN_LOG exists only so the test suite can point the log elsewhere;
+// without it, tests that start the script would write into the real run log.
+const RUN_LOG = process.env.IG_FOLLOWER_RUN_LOG || path.join(HERE, 'run-log.jsonl');
 // Writes to ig_accounts that could not be completed. See recordAttempt().
 const JOURNAL = path.join(HERE, 'pending-writes.jsonl');
 
@@ -99,7 +101,7 @@ const READS_PER_HOUR = [3, 6];
 //                               VPS copy of ig-follower-scraper/config.php.
 //   DB_SSH_HOST                 Default 66.206.23.226, the IP of seo.bizousoft.com.
 //                               The IP is used so the tunnel does not depend on DNS.
-//   DB_SSH_USER                 Default root.
+//   DB_SSH_USER                 Default bizousoft. root login is refused on the VPS.
 //   DB_SSH_PORT                 Default 22.
 //   DB_SSH_KEY                  Optional private key file, passed as ssh -i.
 //   DB_TUNNEL_LOCAL_PORT        Default 3307. 3306 is refused, because that is
@@ -112,7 +114,7 @@ const READS_PER_HOUR = [3, 6];
 
 const SSH = {
   host: process.env.DB_SSH_HOST || '66.206.23.226',
-  user: process.env.DB_SSH_USER || 'root',
+  user: process.env.DB_SSH_USER || 'bizousoft',
   port: parseInt(process.env.DB_SSH_PORT || '22', 10),
   key: process.env.DB_SSH_KEY || '',
   exe: process.env.SSH_PATH || 'ssh',
@@ -121,9 +123,9 @@ const TUNNEL_LOCAL_PORT = parseInt(process.env.DB_TUNNEL_LOCAL_PORT || '3307', 1
 const REMOTE_MYSQL_PORT = parseInt(process.env.DB_REMOTE_MYSQL_PORT || '3306', 10);
 const EXPECT_SERVER_HOSTNAME = process.env.DB_EXPECT_SERVER_HOSTNAME || '';
 const LARAGON_MYSQL_PORT = 3306;
-// How long to wait for the tunnel to come up. Long enough to type the SSH
-// password at the prompt when no key is set up.
-const TUNNEL_WAIT_MS = 90000;
+// How long to wait for the tunnel to come up. ssh runs with BatchMode=yes and
+// key login only (see ensureTunnel), so there is no prompt to wait for.
+const TUNNEL_WAIT_MS = 30000;
 
 const DB = {
   host: '127.0.0.1',
@@ -273,8 +275,16 @@ function tunnelError(message) {
  * that port cannot quietly stand in for the VPS.
  *
  * Otherwise ssh is started with ExitOnForwardFailure, so it exits instead of
- * staying connected without a forward. Its stdio is inherited, so a password
- * prompt appears in this window when no key is set up.
+ * staying connected without a forward.
+ *
+ * ssh runs DETACHED, in its own hidden console, with BatchMode=yes (key login
+ * only, never a prompt). Changed 2026-10-14. Until then ssh shared this
+ * PowerShell window, and two runs that day ended silently with no error and no
+ * summary: one at 13:37 mid-run, one at 14:51 while waiting for the tunnel.
+ * A console shares Ctrl+C and close events between every process attached to
+ * it, so ssh sharing the window is the most likely cause. Detached, nothing ssh
+ * does can reach this process through the console. Its stderr is captured and
+ * shown if it fails, and the moment it ends is logged whenever that happens.
  */
 async function ensureTunnel() {
   if (tunnel && tunnel.exitCode === null && tunnel.signalCode === null) {
@@ -290,6 +300,7 @@ async function ensureTunnel() {
 
   const args = [
     '-N',
+    '-o', 'BatchMode=yes',
     '-o', 'ExitOnForwardFailure=yes',
     '-o', 'ServerAliveInterval=30',
     '-o', 'ServerAliveCountMax=3',
@@ -300,9 +311,20 @@ async function ensureTunnel() {
   args.push(`${SSH.user}@${SSH.host}`);
 
   log('DB', `opening SSH tunnel 127.0.0.1:${TUNNEL_LOCAL_PORT} -> ${SSH.host}:${REMOTE_MYSQL_PORT} as ${SSH.user}`);
-  const child = spawn(SSH.exe, args, { stdio: 'inherit' });
+  const child = spawn(SSH.exe, args, {
+    stdio: ['ignore', 'ignore', 'pipe'],
+    detached: true,
+    windowsHide: true,
+  });
   let spawnError = null;
+  let sshStderr = '';
   child.on('error', (e) => { spawnError = e; });
+  if (child.stderr) child.stderr.on('data', (d) => { sshStderr = (sshStderr + d.toString()).slice(-2000); });
+  child.on('exit', (code, signal) => {
+    log('DB', `ssh tunnel process ended (exit code ${code}, signal ${signal || 'none'})` +
+              (sshStderr.trim() ? `: ${sshStderr.trim().split('\n').slice(-3).join(' | ')}` : ''));
+    jlog({ action: 'tunnel-exit', code, signal: signal || null, stderr: sshStderr.trim().slice(-500) || null });
+  });
   tunnel = child;
 
   const deadline = Date.now() + TUNNEL_WAIT_MS;
@@ -313,7 +335,8 @@ async function ensureTunnel() {
     }
     if (child.exitCode !== null || child.signalCode !== null) {
       tunnel = null;
-      throw tunnelError(`ssh exited (code ${child.exitCode}) before the tunnel was up`);
+      throw tunnelError(`ssh exited (code ${child.exitCode}) before the tunnel was up` +
+                        (sshStderr.trim() ? `. ssh said: ${sshStderr.trim()}` : ''));
     }
     if (await portAnswers(TUNNEL_LOCAL_PORT)) {
       log('DB', 'SSH tunnel is up');
@@ -335,8 +358,9 @@ function closeTunnel() {
 }
 
 // fail() and every normal exit go through process.exit, so this closes the
-// tunnel on all of them. Ctrl+C reaches ssh directly, since it shares the
-// console.
+// tunnel on all of them. ssh runs detached, so if this process is killed
+// outright the tunnel can outlive it; the next run finds the port answering
+// and reuses it, after the server identity check.
 process.on('exit', closeTunnel);
 
 // ------------------------------------------------------ server identity guard
@@ -430,9 +454,10 @@ function dbFailMessage(e) {
     hint = `Something on this PC is listening on port ${TUNNEL_LOCAL_PORT}. Close it, or set ` +
            `DB_TUNNEL_LOCAL_PORT in .env to a free port, and rerun.`;
   } else if (code === 'TUNNEL_FAILED') {
-    hint = `Check that this works from PowerShell on this PC:\n  ssh ${SSH.user}@${SSH.host}\n` +
-           `If it asks for a password, either type it when the script prompts, or set up a key ` +
-           `and point DB_SSH_KEY at it.`;
+    hint = `Check that this prints key-login-ok without asking for a password, in PowerShell:\n` +
+           `  ssh -p ${SSH.port} ${SSH.user}@${SSH.host} "echo key-login-ok"\n` +
+           `The script logs in with the SSH key only (BatchMode), so a password prompt means the key ` +
+           `is not accepted. Set DB_SSH_KEY if the key is not C:\\Users\\ildar\\.ssh\\id_ed25519.`;
   } else if (code === 'ER_ACCESS_DENIED_ERROR') {
     hint = `DB_USER and DB_PASS in .env do not match the VPS. Copy them from the 'db' block of ` +
            `/home/bizousoft/public_html/seo/ig-follower-scraper/config.php on the VPS.`;
@@ -531,8 +556,21 @@ async function withDbRetry(label, fn) {
  *
  * --only bypasses both filters, so a named account can always be tested.
  */
+// A dry run writes nothing back, so without this every pick would return the
+// same first pending row. If that account already shows "Following", no
+// cooldown is spent and the loop would reload the same profile again at once.
+// The dry run therefore remembers what it has opened and excludes it.
+const dryRunSeen = new Set();
+
+/** SQL fragment and params that exclude accounts this dry run already opened. */
+function dryRunExclusion() {
+  if (!DRY_RUN || dryRunSeen.size === 0) return { sql: '', params: [] };
+  return { sql: ' AND a.id NOT IN (?)', params: [[...dryRunSeen]] };
+}
+
 async function nextTargetOnce() {
   const conn = await db();
+  const ex = dryRunExclusion();
 
   if (ONLY) {
     const names = ONLY.split(',').map((s) => s.trim()).filter(Boolean);
@@ -540,9 +578,9 @@ async function nextTargetOnce() {
     const [rows] = await conn.query(
       `SELECT a.id, a.username, a.is_private
          FROM ig_accounts a
-        WHERE a.username IN (?) AND a.follow_status = 'pending'
+        WHERE a.username IN (?) AND a.follow_status = 'pending'${ex.sql}
         ORDER BY a.id LIMIT 1`,
-      [names]
+      [names, ...ex.params]
     );
     return rows[0] || null;
   }
@@ -554,10 +592,10 @@ async function nextTargetOnce() {
          JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
         WHERE a.follow_status = 'pending'
           AND s.followers_count >= ?
-          AND s.posts_count >= ?
+          AND s.posts_count >= ?${ex.sql}
         ORDER BY a.id
         LIMIT 1`,
-      [MIN_FOLLOWERS, MIN_POSTS]
+      [MIN_FOLLOWERS, MIN_POSTS, ...ex.params]
     );
     return rows[0] || null;
   }
@@ -567,10 +605,10 @@ async function nextTargetOnce() {
        FROM ig_accounts a
        LEFT JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
       WHERE a.follow_status = 'pending'
-        AND (s.id IS NULL OR s.posts_count >= ?)
+        AND (s.id IS NULL OR s.posts_count >= ?)${ex.sql}
       ORDER BY a.id
       LIMIT 1`,
-    [MIN_POSTS]
+    [MIN_POSTS, ...ex.params]
   );
   return rows[0] || null;
 }
@@ -980,11 +1018,77 @@ async function readComments(page) {
 }
 
 /**
+ * The profile header's follow-state button, and its label.
+ *
+ * The header can hold more than one button[type="button"]. A profile with
+ * several bio links shows a links button such as "site.com and 1 more", and it
+ * comes BEFORE the Follow button (verified live on /augustinafinejewelry/,
+ * 2026-10-14). Taking .first() therefore read the links button and recorded
+ * those profiles as errors. This walks every header button and returns the one
+ * whose whole text is a follow state.
+ *
+ * Labels are compared exactly, never as substrings: "Following" contains
+ * "Follow", and clicking a Following button opens the unfollow menu.
+ * "Follow Back" (the account already follows us) is normalised to "Follow",
+ * since clicking it sends the same follow. That label is not yet verified live.
+ *
+ * Returns { btn, label } or { btn: null, label: null, seen: [texts] }.
+ */
+const FOLLOW_STATE_LABELS = new Set(['Follow', 'Following', 'Requested', 'Follow Back']);
+
+async function findFollowButton(page) {
+  const all = page.locator('header button[type="button"]');
+  const n = await all.count();
+  const seen = [];
+  for (let i = 0; i < n; i++) {
+    const b = all.nth(i);
+    const raw = (await b.innerText().catch(() => '')).trim();
+    seen.push(raw);
+    const text = /^follow back$/i.test(raw) ? 'Follow Back' : raw;
+    if (FOLLOW_STATE_LABELS.has(text)) {
+      return { btn: b, label: text === 'Follow Back' ? 'Follow' : text };
+    }
+  }
+  return { btn: null, label: null, seen };
+}
+
+/**
+ * Wait for the profile page to settle, up to PROFILE_WAIT_MS.
+ *
+ * Until 2026-10-14 the script waited a fixed 2.5 to 4.5 seconds and then called
+ * a page with no <header> a missing profile. A slow load looked the same, so
+ * @westonerz was "profile not found" in the morning dry run and "already
+ * following" that afternoon. Now it polls for whichever comes first:
+ *
+ *   ready    a header button whose text is a follow state (findFollowButton)
+ *   missing  Instagram's "Sorry, this page isn't available." text
+ *   timeout  neither within PROFILE_WAIT_MS; the caller records an error with
+ *            the header buttons it did see, plus a screenshot
+ *
+ * The missing-page text is the one recorded in instagram-selectors-notes.md.
+ * The apostrophe is matched with "." because Instagram may use ' or a curly one.
+ */
+const PROFILE_WAIT_MS = 15000;
+const PROFILE_MISSING_RE = /Sorry, this page isn.t available/i;
+
+async function waitForProfile(page) {
+  const deadline = Date.now() + PROFILE_WAIT_MS;
+  let found = { btn: null, label: null, seen: [] };
+  while (Date.now() < deadline) {
+    found = await findFollowButton(page);
+    if (found.btn) return { state: 'ready', found };
+    const missing = await page.getByText(PROFILE_MISSING_RE).count().catch(() => 0);
+    if (missing) return { state: 'missing' };
+    await sleep(500);
+  }
+  return { state: 'timeout', found };
+}
+
+/**
  * Follow the next queued account.
  *
- * The button is header button[type="button"]. Its text is compared with === so
- * that "Following" is never mistaken for "Follow": clicking a Following button
- * opens the unfollow menu.
+ * The button is found by findFollowButton(), which picks the header button
+ * whose text is exactly a follow state.
  *
  * Returns true if an attempt consumed the cooldown, false if it did not (an
  * already-followed account sends no request, so it should not cost a slot).
@@ -992,30 +1096,36 @@ async function readComments(page) {
 async function followNext(page) {
   const target = await nextTarget();
   if (!target) { log('FOLLOW', 'queue is empty'); return { attempted: false, exhausted: true }; }
+  if (DRY_RUN) dryRunSeen.add(target.id);
 
   const url = `https://www.instagram.com/${target.username}/`;
   log('FOLLOW', `opening @${target.username}${target.is_private ? ' (private)' : ''}`);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await sleep(rand(2500, 4500));
 
-  // A missing profile renders no <header> at all.
-  const hasHeader = await page.locator('header').count();
-  if (!hasHeader) {
+  const profile = await waitForProfile(page);
+
+  if (profile.state === 'missing') {
     log('FOLLOW', `@${target.username}: profile not found`);
     await recordAttempt(target.id, 'error', 'profile not found');
     jlog({ action: 'follow', user: target.username, status: 'error', note: 'profile not found' });
     return { attempted: false };
   }
 
-  const btn = page.locator('header button[type="button"]').first();
-  if (!(await btn.count())) {
+  if (profile.state === 'timeout') {
     const f = await shot(page, `follow-nobutton-${target.username}`);
-    log('FOLLOW', `@${target.username}: no follow button, screenshot ${f}`);
-    await recordAttempt(target.id, 'error', 'follow button not found');
+    const seen = profile.found.seen;
+    const seenText = seen.length ? seen.map((t) => `"${t.slice(0, 40)}"`).join(', ') : 'none';
+    log('FOLLOW', `@${target.username}: no follow button after ${PROFILE_WAIT_MS / 1000}s, header buttons ${seenText}, screenshot ${f}`);
+    await recordAttempt(target.id, 'error',
+      `no follow button after ${PROFILE_WAIT_MS / 1000}s; header buttons: ${seenText}`.slice(0, 250));
+    jlog({ action: 'follow', user: target.username, status: 'error', note: 'no follow button', seen });
     return { attempted: false };
   }
 
-  const label = (await btn.innerText()).trim();
+  const found = profile.found;
+  const btn = found.btn;
+  const label = found.label;
 
   if (label === 'Following') {
     log('FOLLOW', `@${target.username}: already following`);
@@ -1049,7 +1159,7 @@ async function followNext(page) {
     throw new ActionBlocked(`blocked while following @${target.username}`);
   }
 
-  const after = (await page.locator('header button[type="button"]').first().innerText().catch(() => '')).trim();
+  const after = (await findFollowButton(page)).label || '';
 
   if (after === 'Following') {
     log('FOLLOW', `@${target.username}: followed`);
@@ -1457,5 +1567,47 @@ async function main() {
   await close().catch(() => {});
   process.exit(stopReason === 'ACTION BLOCKED' ? 2 : 0);
 }
+
+// ------------------------------------------------------- exit diagnostics
+//
+// Added 2026-10-14 after two runs ended with no error and no summary. Every way
+// this process can end now leaves a line on screen and in run-log.jsonl, so a
+// silent stop can be told apart from Ctrl+C, a closed window, or a crash.
+
+let exitAnnounced = false;
+
+function announceExit(reason, code) {
+  if (exitAnnounced) return;
+  exitAnnounced = true;
+  try { console.error(`[${stamp()}] EXIT   ${reason} (exit code ${code})`); } catch (_) { /* console gone */ }
+  jlog({ action: 'exit', reason, code });
+}
+
+for (const sig of ['SIGINT', 'SIGBREAK', 'SIGHUP', 'SIGTERM']) {
+  process.on(sig, () => {
+    const what = sig === 'SIGINT' ? 'Ctrl+C (SIGINT)'
+      : sig === 'SIGBREAK' ? 'Ctrl+Break (SIGBREAK)'
+      : sig === 'SIGHUP' ? 'console window closed (SIGHUP)'
+      : 'terminated (SIGTERM)';
+    announceExit(`stopped by ${what}`, 130);
+    process.exit(130);
+  });
+}
+
+process.on('uncaughtException', (e) => {
+  console.error(`\nUNCAUGHT EXCEPTION: ${e && e.stack ? e.stack : e}\n`);
+  announceExit(`uncaught exception: ${e && e.message ? e.message : e}`, 1);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (e) => {
+  console.error(`\nUNHANDLED REJECTION: ${e && e.stack ? e.stack : e}\n`);
+  announceExit(`unhandled rejection: ${e && e.message ? e.message : e}`, 1);
+  process.exit(1);
+});
+
+process.on('exit', (code) => {
+  announceExit(code === 0 ? 'finished' : code === 2 ? 'action blocked' : 'stopped', code);
+});
 
 main().catch((e) => fail(e.stack || e.message));

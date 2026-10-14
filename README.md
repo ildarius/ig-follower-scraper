@@ -1,5 +1,59 @@
 # IG Follower Scraper
 
+## Quickstart guide
+
+This repository holds two programs. The follow script has its own quickstart in
+[instagram-follower/README.md](instagram-follower/README.md). This section covers the PHP app that
+runs on the VPS.
+
+**Shells.** The app itself is used in a browser. Git commands run in Ubuntu. Commands that reach the
+VPS over SSH run in PowerShell, because the SSH key the server accepts is the Windows one,
+`C:\Users\ildar\.ssh\id_ed25519`.
+
+**Addresses.** Assumed from the server layout (`/home/bizousoft/public_html/seo/ig-follower-scraper`);
+correct them here if they differ:
+
+- Dashboard (admin): https://seo.bizousoft.com/ig-follower-scraper/web/public/index.php
+- Accounts browser: https://seo.bizousoft.com/ig-follower-scraper/web/public/accounts.php
+
+### Deploy a change to the VPS
+
+The VPS runs whatever is checked out in its copy of this repository. After a change is committed:
+
+```bash
+cd "/mnt/c/Users/ildar/Claude/All projects/Sunny Kratom/ig-follower-scraper"
+find .git -name desktop.ini -delete
+git push
+```
+
+```powershell
+ssh -p 22222 bizousoft@66.206.23.226 "cd ~/public_html/seo/ig-follower-scraper && git pull && php tests/own-following-test.php"
+```
+
+If the VPS copy is not a git clone, `git pull` fails with "not a git repository"; ask the IT person
+how it is deployed.
+
+### Mark the accounts we already follow (no profile visits needed)
+
+Scrapes @verifiedbotanicals' own following list with Apify and marks every matching `pending` row as
+`already_following`, so the follow script never opens those profiles. Only `pending` rows change, no
+new rows are added, and the operator's `skipped` rows are left alone. **The VPS must have the code
+from 2026-10-14 or later first**: older code imports a following list as new pending targets.
+
+1. On the dashboard, set **Instagram username** to `verifiedbotanicals`, **Direction** to
+   `following`, and clear **Results limit** (blank means all).
+2. Click **Start run**. Cost: $1.15 per 1,000 accounts. @verifiedbotanicals followed 543 accounts on
+   2026-10-14, so about $0.62.
+3. Click **Refresh status** every minute or so until the status is `SUCCEEDED`.
+4. Click **Import until done**. The result includes `marked_already_following`, the number of queue
+   rows that changed.
+5. On the PC, `node instagram-follower.js --check-db` (PowerShell, in `instagram-follower`) shows the
+   new `pending` count.
+
+Repeat whenever many accounts have been followed outside the script, for example by hand.
+
+---
+
 One-time Apify scrape of an Instagram account's follower list into MySQL, written in PHP.
 
 The first target is **@american_kratom_assoc** (12.4K followers as of 2026-09-16). The rows it

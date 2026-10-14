@@ -118,6 +118,9 @@ try {
 
             out('');
             out(sprintf('Done. %d imported, %d skipped, across %d batches.', $summary['imported'], $summary['skipped'], $summary['batches']));
+            if (($summary['marked_already_following'] ?? 0) > 0) {
+                out(sprintf('Marked %d pending accounts as already_following (found in the following list).', $summary['marked_already_following']));
+            }
             if ($summary['errors'] !== []) {
                 out('Actor reported: ' . implode(', ', $summary['errors']));
             }

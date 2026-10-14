@@ -17,6 +17,11 @@ return [
     // Optional: the code defaults to this value if the key is absent.
     'enrich_actor_id' => 'memo23/instagram-followers-count-scraper',
 
+    // The Instagram account the follow script runs as. A "following" scrape of
+    // this account marks matching pending rows as already_following instead of
+    // importing its accounts as targets. Optional: defaults to this value.
+    'own_account' => 'verifiedbotanicals',
+
     // Laragon defaults: root, empty password.
     'db' => [
         'host' => '127.0.0.1',

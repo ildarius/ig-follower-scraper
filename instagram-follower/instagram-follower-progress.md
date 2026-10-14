@@ -183,7 +183,27 @@ repository (github.com/ildarius/ig-follower-scraper). This folder used to be
 - Nothing has been committed or pushed. The old `Sunny Kratom\instagram-follower\` folder is left in
   place for Ildar to delete.
 
-- [ ] `git pull` the two commits on remote master (5375e89, 85e6113), then commit this folder.
+- [x] `git pull` the two commits on remote master (5375e89, 85e6113), then commit this folder. Done 2026-10-14 as 07ecc60.
+- [x] `--check-db` against the VPS passed 2026-10-14: `bizousoft_ig_analytics` on `66-206-23-226.boulat.net`, 6,836 eligible. SSH as `bizousoft` on port 22222 with the PC's `id_ed25519` key; `127.0.0.1` added to cPanel Remote Database Access so the tunnel's connection is accepted.
+- [x] Dry-run fix: a dry run now excludes accounts it already opened, instead of reopening the first pending account on every pick.
+- [x] First real runs 2026-10-14, results confirmed in the VPS database by the queue counts: the
+      13:31 run handled 15 accounts (4 followed, 3 requested, 8 already_following), and the next run's
+      banner showed pending 6,838 to 6,823, followed 108 to 112, requested 87 to 90.
+- [x] Profile detection fix: wait up to 15 s for a follow-state button or "Sorry, this page isn't
+      available." instead of a fixed 2.5 to 4.5 s, which misread a slow load as a missing profile.
+- [x] Silent stops at 13:37 and 14:51 (no error, no summary, not stopped by hand). ssh now runs
+      detached in its own hidden console with BatchMode=yes, its exit is logged, and every way the
+      process ends prints an EXIT line and writes an `exit` entry to `run-log.jsonl`. Cause not proven;
+      next silent stop will show it.
+- [ ] Watch the next runs for `EXIT` lines and `tunnel-exit` entries.
+- [x] Own following list marks already-followed accounts (2026-10-14). Many queue rows had been
+      followed by hand and never recorded, so the script spent visits finding "Following". The PHP
+      app's import now treats a `following` run of `verifiedbotanicals` (config `own_account`) as a
+      marker: matching `pending` rows become `already_following`, no rows are added. Code in
+      `src/Scraper.php` (`isOwnFollowingRun`, `markAlreadyFollowing`), test `tests/own-following-test.php`
+      (18 checks, SQLite, passes). @verifiedbotanicals followed 543 accounts, about $0.62 to scrape.
+- [ ] Deploy to the VPS, then run the following scrape from the dashboard (steps in the repo README).
+- [x] Follow-button fix: the first dry run (2026-10-14) recorded `unexpected button text` on @augustinafinejewelry, @therealmomview and @thesystemtna. Their bio links button comes before Follow in the header. Verified live and fixed with `findFollowButton()`; see the correction in `instagram-selectors-notes.md`.
 - [ ] After the VPS pulls the commit, confirm `node instagram-follower/instagram-follower.js --check-db`
       on the VPS prints STOP and exits 1, and that `instagram-follower/package.json` returns 403 in a
       browser.

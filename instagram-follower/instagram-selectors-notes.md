@@ -147,6 +147,21 @@ const label = (await btn.innerText()).trim();
 if (label === 'Follow') await btn.click();
 ```
 
+**Correction 2026-10-14: `.first()` is wrong on profiles with several bio links.** Those profiles
+show a links button, such as `augustinafinejewelry.etsy.com and 1 more`, as an earlier
+`header button[type="button"]` than Follow. Verified live in the Playwright MCP:
+
+| Profile | Header buttons, in order |
+|---|---|
+| `/augustinafinejewelry/` | `augustinafinejewelry.etsy.com and 1 more`, `Follow` |
+| `/thesystemtna/` | `linktr.ee/TheSystemTNA and 3 more`, `Follow` |
+| `/al.chl/` | `Follow` |
+
+The 2026-09-15 verification used only profiles like `/al.chl/`. The script now uses
+`findFollowButton()`: walk every `header button[type="button"]` and take the one whose trimmed text
+is exactly `Follow`, `Following`, `Requested` or `Follow Back`. The exact comparison still guards the
+substring trap below. `Follow Back` is treated as `Follow` and is not yet verified live.
+
 ### Profile grid links are a different shape
 
 On a profile page the grid links are:
@@ -171,6 +186,14 @@ On a profile page the grid links are:
 
 Detection: wait for either `header button[type="button"]` or the missing-header state, whichever
 settles first. Classify a missing header as `Error: profile not found`.
+
+**2026-10-14: the script did not follow this until today.** It waited a fixed 2.5 to 4.5 seconds and
+then treated "no `<header>`" as a missing profile, so a slow load was recorded as `profile not found`
+(@westonerz: "profile not found" in the morning dry run, "already following" that afternoon).
+`waitForProfile()` now polls every 0.5 s for up to 15 s for either a follow-state button
+(`findFollowButton()`) or the text `Sorry, this page isn't available.`, whichever appears first.
+Neither within 15 s is recorded as `no follow button after 15s` with the header buttons seen, plus
+a screenshot.
 
 ### Private account - NOT yet verified
 

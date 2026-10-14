@@ -144,11 +144,13 @@ try {
             $batches  = 0;
             $done     = false;
             $errors   = [];
+            $marked   = 0;
 
             while (microtime(true) < $deadline) {
                 $r = $scraper->importAny((int) $row['id']);
                 $imported += $r['imported'];
                 $skipped  += $r['skipped'];
+                $marked   += (int) ($r['marked_already_following'] ?? 0);
                 $batches++;
                 $errors = array_values(array_unique(array_merge($errors, $r['errors'])));
                 if ($r['done']) {
@@ -164,6 +166,9 @@ try {
                 'skipped'  => $skipped,
                 'batches'  => $batches,
                 'errors'   => $errors,
+                // Only non-zero for a following list of our own account, where
+                // matching pending rows become already_following.
+                'marked_already_following' => $marked,
                 'run'      => $scraper->getRunRow((int) $row['id']),
             ]);
 
