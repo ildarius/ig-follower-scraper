@@ -202,7 +202,8 @@ repository (github.com/ildarius/ig-follower-scraper). This folder used to be
       marker: matching `pending` rows become `already_following`, no rows are added. Code in
       `src/Scraper.php` (`isOwnFollowingRun`, `markAlreadyFollowing`), test `tests/own-following-test.php`
       (18 checks, SQLite, passes). @verifiedbotanicals followed 543 accounts, about $0.62 to scrape.
-- [ ] Deploy to the VPS, then run the following scrape from the dashboard (steps in the repo README).
+- [x] Deployed to the VPS 2026-10-14 15:35 (git pull to eb8ec97); `tests/own-following-test.php` passes there, 18 of 18.
+- [ ] Run the following scrape from the dashboard (steps in the repo README).
 - [x] Follow-button fix: the first dry run (2026-10-14) recorded `unexpected button text` on @augustinafinejewelry, @therealmomview and @thesystemtna. Their bio links button comes before Follow in the header. Verified live and fixed with `findFollowButton()`; see the correction in `instagram-selectors-notes.md`.
 - [ ] After the VPS pulls the commit, confirm `node instagram-follower/instagram-follower.js --check-db`
       on the VPS prints STOP and exits 1, and that `instagram-follower/package.json` returns 403 in a

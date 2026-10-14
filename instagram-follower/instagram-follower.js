@@ -1360,7 +1360,20 @@ async function checkDb() {
   await db().catch((e) => fail(dbFailMessage(e)));
   const counts = await queueCounts().catch((e) => fail(dbFailMessage(e)));
   const eligible = await eligibleCount().catch((e) => fail(dbFailMessage(e)));
-  const [rows] = await (await db()).query('SELECT MAX(follow_attempted_at) AS last FROM ig_accounts');
+  const conn = await db();
+  const [rows] = await conn.query('SELECT MAX(follow_attempted_at) AS last FROM ig_accounts');
+  // What the most recent following-list import did. Read-only. Added 2026-10-14.
+  const [[marked]] = await conn.query(
+    `SELECT COUNT(*) AS n, MIN(follow_attempted_at) AS first_at, MAX(follow_attempted_at) AS last_at
+       FROM ig_accounts
+      WHERE follow_status = 'already_following'
+        AND follow_note LIKE 'in @% following list, Apify run %'`);
+  const [[ownFollowing]] = await conn.query(
+    `SELECT COUNT(*) AS n FROM ig_relations
+      WHERE source_username = ? AND relation = 'FOLLOWING'`, [ACCOUNT]);
+  const [runs] = await conn.query(
+    `SELECT id, source_username, data_to_scrape, status, items_total, items_imported, started_at
+       FROM ig_scrape_runs ORDER BY id DESC LIMIT 1`);
 
   console.log('');
   console.log(`Server:    ${serverInfo.hostname} (${serverInfo.compileOs}), MySQL ${serverInfo.version}`);
@@ -1372,6 +1385,14 @@ async function checkDb() {
   }
   console.log(`Eligible:  ${eligible} accounts pass the current filter (--min-followers ${MIN_FOLLOWERS})`);
   console.log(`Last follow attempt recorded: ${rows[0].last || 'none'}`);
+  console.log(`Marked already_following from a following list: ${marked.n}` +
+              (marked.n ? ` (between ${marked.first_at} and ${marked.last_at})` : ''));
+  console.log(`@${ACCOUNT} following list rows stored: ${ownFollowing.n}`);
+  if (runs[0]) {
+    const r = runs[0];
+    console.log(`Latest Apify run: #${r.id} @${r.source_username} ${r.data_to_scrape}, ${r.status}, ` +
+                `${r.items_imported} of ${r.items_total} items imported, started ${r.started_at}`);
+  }
   console.log('');
   console.log('OK: this is the remote database. The follow run will use it.');
 }

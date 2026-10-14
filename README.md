@@ -42,13 +42,17 @@ from 2026-10-14 or later first**: older code imports a following list as new pen
 
 1. On the dashboard, set **Instagram username** to `verifiedbotanicals`, **Direction** to
    `following`, and clear **Results limit** (blank means all).
-2. Click **Start run**. Cost: $1.15 per 1,000 accounts. @verifiedbotanicals followed 543 accounts on
-   2026-10-14, so about $0.62.
-3. Click **Refresh status** every minute or so until the status is `SUCCEEDED`.
-4. Click **Import until done**. The result includes `marked_already_following`, the number of queue
-   rows that changed.
-5. On the PC, `node instagram-follower.js --check-db` (PowerShell, in `instagram-follower`) shows the
-   new `pending` count.
+2. Click **Start run** and confirm. Cost: $1.15 per 1,000 accounts. @verifiedbotanicals followed 543
+   accounts on 2026-10-14 (Apify returned 523), so about $0.62.
+3. Keep the tab open. A progress window stays up while Apify runs and the results are imported; the
+   log then says `Marked N queue accounts as already_following.` Since 2026-10-14 the import is
+   automatic. Before that, **Start run** only started the run, and run 19 sat at 0 of 523 imported
+   until it was imported by hand.
+4. On the PC, `node instagram-follower.js --check-db` (PowerShell, in `instagram-follower`) shows
+   `Marked already_following from a following list: N` and the new `pending` count.
+
+If the tab is closed mid-run, the run and its import position are saved: click **Import until
+done** later to finish it. **Refresh status** and **Import one page** are for checking only.
 
 Repeat whenever many accounts have been followed outside the script, for example by hand.
 

@@ -142,7 +142,7 @@ function h(?string $s): string
 <div class="enrich-progress" id="enrich-progress" hidden role="status" aria-live="assertive" aria-atomic="true">
   <div class="enrich-progress-card">
     <div class="spinner" aria-hidden="true"></div>
-    <h2>Enrichment in progress</h2>
+    <h2 id="enrich-progress-title">Enrichment in progress</h2>
     <p id="enrich-progress-message">Keep this tab open while Apify runs and profiles are imported.</p>
   </div>
 </div>
@@ -192,6 +192,7 @@ function h(?string $s): string
       <button id="btn-abort">Abort run</button>
     </div>
     <p class="note" id="cost">At $1.15 per 1,000 profiles, 500 costs about $0.58 and 12,400 costs about $14.26.</p>
+    <p class="note"><strong>Start run</strong> waits for Apify to finish and then imports the results by itself; keep this tab open until the progress window closes. The other buttons are only for checking or resuming a run that was interrupted. A <em>following</em> run of @<?= h((string) Config::get('own_account', 'verifiedbotanicals')) ?> marks the queue accounts we already follow as already_following and adds nothing to the queue.</p>
   </div>
 
   <h2>Enrich profiles</h2>
@@ -271,6 +272,8 @@ function h(?string $s): string
 const out = document.getElementById('out');
 const enrichProgress = document.getElementById('enrich-progress');
 const enrichProgressMessage = document.getElementById('enrich-progress-message');
+const enrichProgressTitle = document.getElementById('enrich-progress-title');
+const OWN_ACCOUNT = <?= json_encode(strtolower(ltrim((string) Config::get('own_account', 'verifiedbotanicals'), '@'))) ?>;
 
 function log(text) {
   const stamp = new Date().toLocaleTimeString();
@@ -295,8 +298,10 @@ function busy(state) {
   });
 }
 
-function setEnrichProgress(visible, message) {
+// One progress window serves both panels; the title says which job is running.
+function setEnrichProgress(visible, message, title) {
   enrichProgress.hidden = !visible;
+  if (title) { enrichProgressTitle.textContent = title; }
   if (message) { enrichProgressMessage.textContent = message; }
 }
 
@@ -308,37 +313,39 @@ function pause(ms) {
 
 // Apify runs asynchronously. Keep that boundary in the API so imports remain
 // resumable, while presenting one normal "enrich and import" action in the UI.
-async function waitForRun(runId) {
+async function waitForRun(runId, label = 'Enrichment run') {
   for (;;) {
     const body = await call({ action: 'status', run: runId });
     const run = body.run;
-    log('Enrichment run ' + run.id + ' is ' + run.status + '.');
+    log(label + ' ' + run.id + ' is ' + run.status + '.');
     setEnrichProgress(true, 'Apify is ' + run.status + '. Keep this tab open.');
     if (!TERMINAL_RUN_STATUSES.has(run.status)) {
       await pause(5000);
       continue;
     }
     if (run.status !== 'SUCCEEDED') {
-      throw new Error('Enrichment run ended as ' + run.status + '. Nothing was imported.');
+      throw new Error(label + ' ended as ' + run.status + '. Nothing was imported.');
     }
     return run;
   }
 }
 
-async function importRunUntilDone(runId) {
+async function importRunUntilDone(runId, noun = 'profiles') {
   let total = 0;
+  let marked = 0;
   for (;;) {
     const params = { action: 'import-all', seconds: 60 };
     if (runId !== undefined) { params.run = runId; }
     const body = await call(params);
     total += body.imported;
+    marked += body.marked_already_following || 0;
     log('Imported +' + body.imported + ' (running total ' + total +
         ', cursor ' + body.run.cursor_offset + ').');
-    setEnrichProgress(true, 'Importing profiles: ' + total + ' imported in this session. Keep this tab open.');
+    setEnrichProgress(true, 'Importing ' + noun + ': ' + total + ' imported in this session. Keep this tab open.');
     if (body.errors.length) { log('Actor reported: ' + body.errors.join(', ')); }
     if (body.done) {
       log('Import finished. ' + total + ' rows imported.');
-      return body;
+      return { body, total, marked };
     }
   }
 }
@@ -354,18 +361,37 @@ function startParams() {
   return params;
 }
 
+// Start, wait for Apify, then import, as one action. Until 2026-10-14 this only
+// started the run and the import was a separate button, so a run could finish
+// at Apify with nothing ever imported (run 19 sat at 0 of 523 that way).
 document.getElementById('btn-start').addEventListener('click', async () => {
   const params = startParams();
   const label = params.limit ? params.limit + ' profiles' : 'every profile, uncapped';
-  if (!confirm('Start a paid Apify run for @' + params.username + ' (' + label + ')?')) { return; }
+  const ownFollowing = params.what === 'following'
+    && params.username.replace(/^@/, '').toLowerCase() === OWN_ACCOUNT;
+  const effect = ownFollowing
+    ? 'Accounts we already follow will be marked already_following. Nothing is added to the queue.'
+    : 'The results are imported into the queue when the run finishes.';
+  if (!confirm('Start a paid Apify run for @' + params.username + ' ' + params.what +
+               ' (' + label + ')?\n\n' + effect + '\n\nKeep this tab open until it finishes.')) { return; }
   busy(true);
+  const title = ownFollowing ? 'Marking accounts we already follow'
+    : 'Scraping @' + params.username + ' ' + params.what;
+  setEnrichProgress(true, 'Starting Apify. Keep this tab open while it runs and the results are imported.', title);
   try {
     const body = await call(params);
     log('Started. Local run ' + body.run.id + ', Apify run ' + body.run.apify_run_id +
-        (body.estimated_cost_usd !== null ? ', about $' + body.estimated_cost_usd : ''));
+        (body.estimated_cost_usd !== null ? ', about $' + body.estimated_cost_usd : '') +
+        '. Waiting for Apify, then importing automatically.');
+    await waitForRun(body.run.id, 'Run');
+    const result = await importRunUntilDone(body.run.id, 'accounts');
+    if (ownFollowing) {
+      log('Marked ' + result.marked + ' queue accounts as already_following.');
+    }
   } catch (e) {
-    log('ERROR ' + e.message);
+    log('ERROR ' + e.message + '. The run and its import cursor are saved; press Import until done to resume.');
   } finally {
+    setEnrichProgress(false);
     busy(false);
   }
 });
@@ -410,7 +436,7 @@ document.getElementById('btn-import-all').addEventListener('click', async () => 
     }
     log('Import finished. ' + total + ' rows over ' + pages + ' pages.');
   } catch (e) {
-    log('ERROR ' + e.message + ' — the cursor is saved, press this again to resume.');
+    log('ERROR ' + e.message + '. The cursor is saved, press this again to resume.');
   } finally {
     busy(false);
   }
@@ -422,7 +448,7 @@ document.getElementById('btn-enrich').addEventListener('click', async () => {
   const cost = (parseInt(n, 10) || 0) * 0.0013;
   if (!confirm('Enrich ' + n + ' profiles? Roughly $' + cost.toFixed(2) + '.')) { return; }
   busy(true);
-  setEnrichProgress(true, 'Starting Apify. Keep this tab open while it runs and profiles are imported.');
+  setEnrichProgress(true, 'Starting Apify. Keep this tab open while it runs and profiles are imported.', 'Enrichment in progress');
   try {
     const body = await call({ action: 'enrich', n: n, public: pub });
     log('Enrichment run ' + body.run.id + ' started (Apify ' + body.run.apify_run_id + '), ' +
@@ -431,7 +457,7 @@ document.getElementById('btn-enrich').addEventListener('click', async () => {
     await waitForRun(body.run.id);
     await importRunUntilDone(body.run.id);
   } catch (e) {
-    log('ERROR ' + e.message + ' — use Resume latest import after the run succeeds.');
+    log('ERROR ' + e.message + '. Use Resume latest import after the run succeeds.');
   } finally {
     setEnrichProgress(false);
     busy(false);
@@ -443,7 +469,7 @@ document.getElementById('btn-enrich-import').addEventListener('click', async () 
   try {
     await importRunUntilDone();
   } catch (e) {
-    log('ERROR ' + e.message + ' — the cursor is saved, press Resume latest import again.');
+    log('ERROR ' + e.message + '. The cursor is saved, press Resume latest import again.');
   } finally {
     busy(false);
   }
