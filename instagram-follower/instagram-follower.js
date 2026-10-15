@@ -1374,6 +1374,23 @@ async function checkDb() {
   const [runs] = await conn.query(
     `SELECT id, source_username, data_to_scrape, status, items_total, items_imported, started_at
        FROM ig_scrape_runs ORDER BY id DESC LIMIT 1`);
+  // Every account in our stored following list, by its status in the queue.
+  // "not in queue" means we follow it but it was never a follow target.
+  const [followingByStatus] = await conn.query(
+    `SELECT COALESCE(a.follow_status, 'not in queue') AS status, COUNT(*) AS n
+       FROM ig_relations r
+       LEFT JOIN ig_accounts a ON a.ig_user_id = r.ig_user_id
+      WHERE r.source_username = ? AND r.relation = 'FOLLOWING'
+      GROUP BY status ORDER BY n DESC`, [ACCOUNT]);
+  // Queue rows recorded as followed that are NOT in that list: unfollowed since,
+  // or the follow never took. Only meaningful once a following list is stored.
+  const [[followedMissing]] = await conn.query(
+    `SELECT COUNT(*) AS n
+       FROM ig_accounts a
+      WHERE a.follow_status = 'followed'
+        AND NOT EXISTS (SELECT 1 FROM ig_relations r
+                         WHERE r.source_username = ? AND r.relation = 'FOLLOWING'
+                           AND r.ig_user_id = a.ig_user_id)`, [ACCOUNT]);
 
   console.log('');
   console.log(`Server:    ${serverInfo.hostname} (${serverInfo.compileOs}), MySQL ${serverInfo.version}`);
@@ -1388,6 +1405,11 @@ async function checkDb() {
   console.log(`Marked already_following from a following list: ${marked.n}` +
               (marked.n ? ` (between ${marked.first_at} and ${marked.last_at})` : ''));
   console.log(`@${ACCOUNT} following list rows stored: ${ownFollowing.n}`);
+  if (ownFollowing.n > 0) {
+    console.log(`  of which, by queue status:`);
+    for (const f of followingByStatus) console.log(`    ${String(f.status).padEnd(18)} ${f.n}`);
+    console.log(`  queue rows marked followed but not in the stored list: ${followedMissing.n}`);
+  }
   if (runs[0]) {
     const r = runs[0];
     console.log(`Latest Apify run: #${r.id} @${r.source_username} ${r.data_to_scrape}, ${r.status}, ` +

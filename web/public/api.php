@@ -792,12 +792,34 @@ try {
                 );
             }
 
+            // ig_own_following, ig_post_likes and ig_accounts.request_checked_at,
+            // for the follow script's profile-likes action. Added 2026-10-15.
+            $ownFollowing = OwnFollowing::ensureSchema();
+
             respond([
-                'ok'          => true,
-                'tables'      => array_map('current', Db::all('SHOW TABLES')),
-                'raw_rows'    => (int) Db::scalar('SELECT COUNT(*) FROM ig_raw_items'),
-                'stats_rows'  => (int) Db::scalar('SELECT COUNT(*) FROM ig_profile_stats'),
-                'kind_column' => $hasKind === 0 ? 'added' : 'already present',
+                'ok'            => true,
+                'tables'        => array_map('current', Db::all('SHOW TABLES')),
+                'raw_rows'      => (int) Db::scalar('SELECT COUNT(*) FROM ig_raw_items'),
+                'stats_rows'    => (int) Db::scalar('SELECT COUNT(*) FROM ig_profile_stats'),
+                'kind_column'   => $hasKind === 0 ? 'added' : 'already present',
+                'own_following' => $ownFollowing,
+            ]);
+
+        case 'own-following-rebuild':
+            // Fill ig_own_following from a following-list run of our own account
+            // that is already imported, using the payloads in ig_raw_items. No
+            // Apify call, no cost. Defaults to the most recent such run. Admin
+            // only: Acl's operator allowlist does not name it.
+            OwnFollowing::ensureSchema();
+            $runId = isset($_GET['run']) ? (int) $_GET['run'] : OwnFollowing::latestOwnFollowingRunId();
+            if ($runId === null) {
+                respond(['ok' => false, 'error' => 'No following-list run of our own account yet. Start one from the dashboard.'], 400);
+            }
+            $result = OwnFollowing::rebuildFromRun($runId, $scraper, Config::now());
+            respond([
+                'ok'                 => true,
+                'rebuild'            => $result,
+                'own_following_rows' => (int) Db::scalar('SELECT COUNT(*) FROM ig_own_following'),
             ]);
 
         case 'reset-cursor':

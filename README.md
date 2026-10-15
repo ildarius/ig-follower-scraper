@@ -56,6 +56,14 @@ done** later to finish it. **Refresh status** and **Import one page** are for ch
 
 Repeat whenever many accounts have been followed outside the script, for example by hand.
 
+The same import also records every followed account in `ig_own_following`, the list the follow
+script's profile-likes action picks from (added 2026-10-15). To fill that table from a run that was
+imported before 2026-10-15, without a new Apify run, open as an admin:
+
+- https://seo.bizousoft.com/ig-follower-scraper/web/public/api.php?action=migrate (creates the tables)
+- https://seo.bizousoft.com/ig-follower-scraper/web/public/api.php?action=own-following-rebuild (fills
+  `ig_own_following` from the stored items of the latest following-list run; free, safe to repeat)
+
 ---
 
 One-time Apify scrape of an Instagram account's follower list into MySQL, written in PHP.
@@ -303,6 +311,8 @@ Ildar can also run everything from PowerShell with `cli.php`, which has no reque
 | `src/Db.php` | PDO singleton, utf8mb4, exceptions on, emulated prepares off. |
 | `src/Apify.php` | REST client: start a run, read a run, abort a run, page a dataset. |
 | `src/Scraper.php` | Orchestration: `start()`, `refresh()`, `importBatch()`, `importAll()`, `stats()`. |
+| `src/OwnFollowing.php` | `ig_own_following` (accounts we follow) and `ig_post_likes` (posts the follow script liked): schema, upsert, rebuild from a stored following-list run. |
+| `tests/own-following-test.php` | Marking already-followed rows and the `ig_own_following` table. SQLite, no MySQL or Apify. |
 | `cli.php` | PowerShell entry point. |
 | `web/public/index.php` | Dashboard. Admin only. |
 | `web/public/accounts.php` | Accounts browser. The page the employee uses. |
@@ -317,7 +327,7 @@ Endpoints: `?action=` `start`, `status`, `import`, `import-all`, `abort`, `stats
 `enrich`, `enrich-stats`, `raw`, `probe`, `migrate`, `reset-cursor`, `dump`, `accounts-search`,
 `accounts-facets`, `accounts-bulk`, `queue-stats`, `queue-head`, `queue-row`, `recent-attempts`,
 `facets`, `account`, `profile`, `bio-search`, `import-followed`, `actor-pricing`, `run-cost`,
-`usage`.
+`usage`, `own-following-rebuild`.
 
 `import` and `import-all` route by the run's `kind` column, so the same buttons work for follower
 runs and enrichment runs.

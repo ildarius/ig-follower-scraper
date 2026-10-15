@@ -137,3 +137,38 @@ CREATE TABLE IF NOT EXISTS `ig_profile_stats` (
 -- ig_scrape_runs gains a `kind` so follower runs and profile-enrichment runs
 -- can share one table: 'followers' or 'profiles'.
 -- ALTER TABLE `ig_scrape_runs` ADD COLUMN `kind` VARCHAR(16) NOT NULL DEFAULT 'followers' AFTER `actor_id`;
+
+-- ---------------------------------------------------------------------------
+-- Added 2026-10-15 for the follow script's profile-likes action. Created by
+-- ?action=migrate, by OwnFollowing::ensureSchema(), or by importing a
+-- following-list run of our own account.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `ig_own_following` (
+  `ig_user_id`      VARCHAR(32)  NOT NULL,
+  `username`        VARCHAR(255) NOT NULL,
+  `full_name`       VARCHAR(255)     NULL,
+  `is_private`      TINYINT(1)   NOT NULL DEFAULT 0,
+  `source`          VARCHAR(24)  NOT NULL COMMENT 'following_list, follow_script or request_accepted',
+  `first_seen_at`   DATETIME     NOT NULL COMMENT 'America/New_York wall time, written by the app',
+  `last_seen_at`    DATETIME     NOT NULL,
+  `last_visited_at` DATETIME         NULL COMMENT 'written by the follow script',
+  `last_liked_at`   DATETIME         NULL COMMENT 'written by the follow script',
+  `visit_note`      VARCHAR(255)     NULL COMMENT 'why the last visit liked nothing, if it did not',
+  PRIMARY KEY (`ig_user_id`),
+  KEY `idx_own_last_visited` (`last_visited_at`),
+  KEY `idx_own_username` (`username`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `ig_post_likes` (
+  `id`             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `post_code`      VARCHAR(64)     NOT NULL COMMENT 'the <code> in /p/<code>/, for posts and reels alike',
+  `owner_username` VARCHAR(255)        NULL,
+  `source`         VARCHAR(16)     NOT NULL COMMENT 'profile or feed',
+  `liked_at`       DATETIME        NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uniq_post_code` (`post_code`),
+  KEY `idx_post_likes_liked_at` (`liked_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- When the follow script last found a follow request still pending.
+-- ALTER TABLE `ig_accounts` ADD COLUMN `request_checked_at` DATETIME NULL AFTER `follow_note`;

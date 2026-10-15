@@ -163,9 +163,17 @@ final class Scraper
         // A following list of our own account is not a list of targets. Every
         // account in it is one we already follow, so it must never be inserted
         // into ig_accounts as a new pending row. It only marks matching pending
-        // rows as already_following. See markAlreadyFollowing().
+        // rows as already_following (see markAlreadyFollowing()) and records the
+        // account in ig_own_following, the pool the profile-likes action of the
+        // follow script picks from (see OwnFollowing).
         $ownFollowingRun = $this->isOwnFollowingRun($row);
         $marked          = 0;
+
+        // Before the transaction: in MySQL, CREATE TABLE commits any open
+        // transaction implicitly, which would break the rollback below.
+        if ($ownFollowingRun) {
+            OwnFollowing::ensureSchema();
+        }
 
         $pdo = Db::pdo();
         $pdo->beginTransaction();
@@ -232,6 +240,7 @@ final class Scraper
 
                 if ($ownFollowingRun) {
                     $marked += $this->markAlreadyFollowing($userId, (string) $row['source_username'], $runRowId, $now);
+                    OwnFollowing::upsertFromItem($item, 'following_list', $now);
                     $upsertRelation->execute([
                         'source_username' => (string) $row['source_username'],
                         'relation'        => 'FOLLOWING',

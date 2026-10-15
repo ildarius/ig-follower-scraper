@@ -267,3 +267,68 @@ Three real actions were performed while verifying. All were intentional and none
 | Like | `/p/DcY1QXEF8o2/` (al.chl) | Only way to confirm the `Like` to `Unlike` flip. |
 | Follow | `/painbcofficial/` (Pain BC) | Only way to confirm the `Follow` to `Following` flip. A real target: `chronic-pain-instagram-canada.md` names Pain BC as the most credible Canadian pain-advocacy account and recommends following it. |
 | Watched stories | tippytop2020, coryfuller2026 | Opening the viewer was needed to expose the tray `aria-label` seen state. |
+
+---
+
+## 6. Profile likes (verified live 2026-10-15)
+
+Verified in the Playwright MCP, signed in as @verifiedbotanicals, without clicking any Like, Follow or
+Unlike. Used for the profile-likes action; see [profile-likes-progress.md](profile-likes-progress.md).
+
+### Profile grid tiles
+
+```
+main a[href*="/p/"], main a[href*="/reel/"]
+```
+
+The first match is the top-left tile; matches run left to right, top to bottom (checked by position).
+12 tiles were present on load on @american_kratom_assoc.
+
+| Tile type | href | Marker inside the tile |
+|---|---|---|
+| Photo or carousel post | `/<user>/p/<code>/` | none, or a carousel icon |
+| Reel | `/<user>/reel/<code>/` | `svg[aria-label="Clip"]` |
+| Pinned post | `/<user>/p/<code>/` | `svg[aria-label="Pinned post icon"]` |
+
+Seen on @augustinafinejewelry: three pinned posts first, then two reels, then plain posts. Pinned posts
+and reels are both included in the action (Ildar, 2026-10-15), so the markers are not needed for
+selection.
+
+### Opening a tile
+
+Clicking any tile, photo, pinned post or reel, opens a `[role="dialog"]` and changes the URL to
+`/p/<code>/`, including for reels. The post code for the record is the last path segment. Escape closes
+the dialog and returns to the profile.
+
+### The post's like button
+
+The dialog holds two kinds of like icon: the post's own (24 px, in the action bar) and one per comment
+(12 px, inside the comment `ul`). The action bar is the innermost `section` that holds a Comment icon
+and a like icon:
+
+```
+[role="dialog"] section:not(:has(section)):has(svg[aria-label="Comment"]):has(svg[aria-label="Like"], svg[aria-label="Unlike"])
+```
+
+Click target: `<bar> div[role="button"]:has(svg[aria-label="Like"])`. Liked state: `<bar> svg[aria-label="Unlike"]`.
+
+| Case | Bars matched | Like buttons | Unlike icons |
+|---|---|---|---|
+| Photo post, dialog | 1 | 1 | 0 |
+| Reel, dialog | 1 | 1 | 0 |
+| Pinned photo post, dialog | 1 | 1 | 0 |
+| Already-liked post (`/p/Dd8zjuNpGgj/`), opened by URL, full page | 1 | 0 | 1 |
+
+On the full page there is also an outer `section` wrapping the post and its comments; the
+`:not(:has(section))` part is what excludes it.
+
+### Follow state and private profiles
+
+| Case | Example | Header button | Tiles | Page text |
+|---|---|---|---|---|
+| Followed | @american_kratom_assoc | `Following` (after any bio-links button) | shown | |
+| Private, request accepted | @logan_rainer | `Following` | shown (1) | |
+| Private, request pending | @aabssmalik | `Requested` | 0 | "This profile is private" |
+
+Use the button and the tile count, not the text: the text was "This account is private" when section 3
+was written and is "This profile is private" now.
