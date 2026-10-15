@@ -79,6 +79,16 @@ const LIKES_PER_HOUR = [5, 10];
 const STORIES_PER_HOUR = [5, 15];
 const READS_PER_HOUR = [3, 6];
 
+// Profile likes (added 2026-10-15, see profile-likes-progress.md): open a
+// random account we follow and like one of its recent posts or reels.
+const PROFILE_LIKES_PER_HOUR = [1, 2];        // --profile-likes-per-hour N or N-M
+const PROFILE_LIKE_MIN_GAP_MS = 20 * 60 * 1000; // between two profile visits
+const PROFILE_LIKES_PER_RUN_MAX = 15;
+const PROFILE_REVISIT_DAYS = 14;              // also the recheck interval for pending requests
+const PROFILE_RECENT_TILES = 6;               // pick among the N most recent grid tiles
+const PROFILE_TRIES = 2;                      // posts tried per visit before moving on
+const TOTAL_LIKES_PER_HOUR_MAX = 10;          // feed and profile likes combined
+
 // ---------------------------------------------------------------- database
 //
 // The queue lives ONLY in the sunny_kratom database on seo.bizousoft.com.
@@ -161,6 +171,10 @@ const MIN_FOLLOWERS = parseInt(val('--min-followers', '50'), 10);
 // does is open a profile and click Follow, which is the least human moment of
 // the whole session and defeats the point of the filler actions.
 const NO_WARMUP = has('--no-warmup');
+const NO_PROFILE_LIKES = has('--no-profile-likes');
+// Test mode: one profile visit (and like, unless --dry-run), then stop. No follows.
+const PROFILE_LIKE_ONCE = has('--profile-like-once');
+const PROFILE_LIKES_RANGE = parseRange(val('--profile-likes-per-hour', ''), PROFILE_LIKES_PER_HOUR, '--profile-likes-per-hour');
 const MAX_MINUTES = parseInt(val('--max-minutes', '0'), 10);
 const ONLY = val('--only', '');
 const CDP_URL = val('--cdp', DEFAULT_CDP);
@@ -178,6 +192,11 @@ const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
 /** MySQL DATETIME string in America/New_York. sv-SE formats as YYYY-MM-DD HH:MM:SS. */
 function nyNow() {
   return new Date().toLocaleString('sv-SE', { timeZone: TZ }).replace('T', ' ').slice(0, 19);
+}
+
+/** Like nyNow(), for any moment given in epoch milliseconds. */
+function nyAt(ms) {
+  return new Date(ms).toLocaleString('sv-SE', { timeZone: TZ }).replace('T', ' ').slice(0, 19);
 }
 
 function stamp() {
@@ -576,7 +595,7 @@ async function nextTargetOnce() {
     const names = ONLY.split(',').map((s) => s.trim()).filter(Boolean);
     if (!names.length) return null;
     const [rows] = await conn.query(
-      `SELECT a.id, a.username, a.is_private
+      `SELECT a.id, a.ig_user_id, a.username, a.is_private
          FROM ig_accounts a
         WHERE a.username IN (?) AND a.follow_status = 'pending'${ex.sql}
         ORDER BY a.id LIMIT 1`,
@@ -587,7 +606,7 @@ async function nextTargetOnce() {
 
   if (MIN_FOLLOWERS > 0) {
     const [rows] = await conn.query(
-      `SELECT a.id, a.username, a.is_private, s.posts_count, s.followers_count
+      `SELECT a.id, a.ig_user_id, a.username, a.is_private, s.posts_count, s.followers_count
          FROM ig_accounts a
          JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
         WHERE a.follow_status = 'pending'
@@ -601,7 +620,7 @@ async function nextTargetOnce() {
   }
 
   const [rows] = await conn.query(
-    `SELECT a.id, a.username, a.is_private, s.posts_count, s.followers_count
+    `SELECT a.id, a.ig_user_id, a.username, a.is_private, s.posts_count, s.followers_count
        FROM ig_accounts a
        LEFT JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
       WHERE a.follow_status = 'pending'
@@ -919,7 +938,7 @@ async function likePost(page) {
     await page.mouse.wheel(0, randInt(600, 1200));
     await sleep(rand(1200, 2500));
     log('LIKE', 'nothing likeable in view, scrolled instead');
-    return;
+    return false;
   }
 
   const target = pick(candidates);
@@ -927,7 +946,7 @@ async function likePost(page) {
 
   if (DRY_RUN) {
     log('LIKE', `dry run, would like ${target.href} by ${target.who}`);
-    return;
+    return false;
   }
 
   await page.locator(sel).first().click();
@@ -940,11 +959,16 @@ async function likePost(page) {
   if (nowUnlike > 0) {
     log('LIKE', `liked ${target.href} by ${target.who}`);
     jlog({ action: 'like', post: target.href, author: target.who, ok: true });
-  } else {
-    log('LIKE', `click did not register on ${target.href}`);
-    jlog({ action: 'like', post: target.href, ok: false });
-    if (await isActionBlocked(page)) throw new ActionBlocked('blocked while liking');
+    // Best effort: a feed like also goes in ig_post_likes, so the profile-likes
+    // action never opens a post the feed action already liked.
+    const code = postCodeFromHref(target.href);
+    if (code) await recordPostLike(code, String(target.who || '').replace(/\//g, ''), 'feed');
+    return true;
   }
+  log('LIKE', `click did not register on ${target.href}`);
+  jlog({ action: 'like', post: target.href, ok: false });
+  if (await isActionBlocked(page)) throw new ActionBlocked('blocked while liking');
+  return false;
 }
 
 /**
@@ -1130,6 +1154,7 @@ async function followNext(page) {
   if (label === 'Following') {
     log('FOLLOW', `@${target.username}: already following`);
     await recordAttempt(target.id, 'already_following', null);
+    await addOwnFollowing(target, 'follow_script');
     jlog({ action: 'follow', user: target.username, status: 'already_following' });
     return { attempted: false };       // no request sent, so no cooldown
   }
@@ -1164,6 +1189,7 @@ async function followNext(page) {
   if (after === 'Following') {
     log('FOLLOW', `@${target.username}: followed`);
     await recordAttempt(target.id, 'followed', null);
+    await addOwnFollowing(target, 'follow_script');
     jlog({ action: 'follow', user: target.username, status: 'followed' });
   } else if (after === 'Requested') {
     log('FOLLOW', `@${target.username}: requested (private account)`);
@@ -1278,6 +1304,370 @@ async function checkSignedIn(page) {
     fail(`Chrome at ${CDP_URL} is not signed in to Instagram.\n` +
          `Run with --login, sign in as @${ACCOUNT} in that window, then rerun.`);
   }
+}
+
+// ------------------------------------------------ profile likes: pure helpers
+//
+// Added 2026-10-15. Plan and decisions: profile-likes-progress.md. Selectors:
+// section 6 of instagram-selectors-notes.md. Nothing in this section touches the
+// browser or the database, so tests/profile-likes-test.js loads it directly.
+
+/** "2" or "1-2" into [min, max]. Empty text gives the default. Exits on bad input. */
+function parseRange(text, dflt, flagName) {
+  if (text === undefined || text === null || String(text).trim() === '') return dflt.slice();
+  const m = /^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/.exec(String(text));
+  if (!m) {
+    console.error(`\nERROR: ${flagName} must be a number or a range such as 1-2, not "${text}".\n`);
+    process.exit(1);
+  }
+  const a = parseInt(m[1], 10);
+  const b = m[2] !== undefined ? parseInt(m[2], 10) : a;
+  return a <= b ? [a, b] : [b, a];
+}
+
+/** The <code> of /<user>/p/<code>/, /<user>/reel/<code>/ or /p/<code>/, or null. */
+function postCodeFromHref(href) {
+  const m = /\/(?:p|reel)\/([A-Za-z0-9_-]+)/.exec(String(href || ''));
+  return m ? m[1] : null;
+}
+
+/**
+ * What to do on a profile, from how we came to pick it and what its follow
+ * button says.
+ *
+ *   kind 'own'        the account is in ig_own_following (we follow it)
+ *   kind 'requested'  ig_accounts says requested; this visit checks acceptance
+ *   label             findFollowButton()'s label, or null when there is none
+ *
+ * Returns one of:
+ *   'like'          we follow it: go on and like a post
+ *   'accepted'      the pending request was accepted: record that, then like
+ *   'still_pending' the request is still pending: note the check, like nothing
+ *   'request_gone'  the button says Follow: the request was declined or
+ *                   withdrawn; note the check, like nothing, never click Follow
+ *   'not_following' we no longer follow an account we used to; note, like nothing
+ *   'no_button'     no follow-state button; note, like nothing
+ */
+function visitDecision(kind, label) {
+  if (!label) return 'no_button';
+  if (kind === 'requested') {
+    if (label === 'Following') return 'accepted';
+    if (label === 'Requested') return 'still_pending';
+    return 'request_gone';
+  }
+  return label === 'Following' ? 'like' : 'not_following';
+}
+
+/**
+ * May a profile-likes visit start now? Pure: the caller passes the counters.
+ *
+ *   st.disabled       reason string when the action is off for this run, else null
+ *   st.budget         likes allowed this hour (drawn from the per-hour range)
+ *   st.thisHour       profile likes this hour
+ *   st.thisRun        profile likes this run
+ *   st.lastAttemptAt  epoch ms of the last visit, liked or not (0 if none)
+ *   totalLikesHour    feed and profile likes this hour
+ */
+function profileLikeGate(st, totalLikesHour, now, limits) {
+  if (st.disabled) return { ok: false, reason: st.disabled };
+  if (st.thisRun >= limits.perRunMax) return { ok: false, reason: 'run maximum reached' };
+  if (st.thisHour >= st.budget) return { ok: false, reason: 'hourly budget used' };
+  if (totalLikesHour >= limits.totalPerHourMax) return { ok: false, reason: 'total likes this hour at maximum' };
+  if (st.lastAttemptAt && now - st.lastAttemptAt < limits.minGapMs) return { ok: false, reason: 'too soon after the last visit' };
+  return { ok: true, reason: null };
+}
+
+/** Fisher-Yates shuffle of a copy. */
+function shuffled(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+// ---------------------------------------- profile likes: browser and database
+
+const PROFILE_TILE_SEL = 'main a[href*="/p/"], main a[href*="/reel/"]';
+// The post's action bar inside the dialog: the innermost section holding a
+// Comment icon and a like icon. Excludes the 12 px like buttons on comments.
+const POST_BAR_SEL = '[role="dialog"] section:not(:has(section)):has(svg[aria-label="Comment"])' +
+  ':has(svg[aria-label="Like"], svg[aria-label="Unlike"])';
+
+let profileLikesReady = null;          // null: not checked yet
+const profileVisitedThisRun = new Set();
+
+/** Do ig_own_following, ig_post_likes and ig_accounts.request_checked_at exist? */
+async function checkProfileLikesSchema() {
+  if (profileLikesReady !== null) return profileLikesReady;
+  const [[r]] = await (await db()).query(
+    `SELECT
+       (SELECT COUNT(*) FROM information_schema.TABLES
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('ig_own_following', 'ig_post_likes')) AS tables_n,
+       (SELECT COUNT(*) FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ig_accounts' AND COLUMN_NAME = 'request_checked_at') AS col_n`);
+  profileLikesReady = Number(r.tables_n) === 2 && Number(r.col_n) === 1;
+  return profileLikesReady;
+}
+
+/**
+ * A random account due for a visit: one we follow that was not visited in the
+ * last PROFILE_REVISIT_DAYS days, or a pending request not checked in that time.
+ */
+async function pickProfileTarget() {
+  const cutoff = nyAt(Date.now() - PROFILE_REVISIT_DAYS * 24 * 3600 * 1000);
+  const exclude = [...profileVisitedThisRun];
+  const notIn = exclude.length ? ' AND x.ig_user_id NOT IN (?)' : '';
+  return withDbRetry('pickProfileTarget', async () => {
+    const [rows] = await (await db()).query(
+      `SELECT x.* FROM (
+         SELECT 'own' AS kind, o.ig_user_id, o.username, NULL AS account_id, o.is_private
+           FROM ig_own_following o
+          WHERE o.last_visited_at IS NULL OR o.last_visited_at < ?
+         UNION ALL
+         SELECT 'requested' AS kind, a.ig_user_id, a.username, a.id AS account_id, a.is_private
+           FROM ig_accounts a
+          WHERE a.follow_status = 'requested'
+            AND COALESCE(a.request_checked_at, a.follow_attempted_at, '2000-01-01 00:00:00') < ?
+            AND NOT EXISTS (SELECT 1 FROM ig_own_following o2 WHERE o2.ig_user_id = a.ig_user_id)
+       ) x
+       WHERE x.username <> ?${notIn}
+       ORDER BY RAND()
+       LIMIT 1`,
+      exclude.length ? [cutoff, cutoff, ACCOUNT, exclude] : [cutoff, cutoff, ACCOUNT]);
+    return rows[0] || null;
+  });
+}
+
+/** How many accounts are due, for the banner and --check-db. */
+async function profileTargetsDue() {
+  const cutoff = nyAt(Date.now() - PROFILE_REVISIT_DAYS * 24 * 3600 * 1000);
+  return withDbRetry('profileTargetsDue', async () => {
+    const [[r]] = await (await db()).query(
+      `SELECT
+         (SELECT COUNT(*) FROM ig_own_following) AS own_total,
+         (SELECT COUNT(*) FROM ig_own_following WHERE last_visited_at IS NULL OR last_visited_at < ?) AS own_due,
+         (SELECT COUNT(*) FROM ig_accounts a
+           WHERE a.follow_status = 'requested'
+             AND COALESCE(a.request_checked_at, a.follow_attempted_at, '2000-01-01 00:00:00') < ?
+             AND NOT EXISTS (SELECT 1 FROM ig_own_following o WHERE o.ig_user_id = a.ig_user_id)) AS requests_due,
+         (SELECT COUNT(*) FROM ig_post_likes) AS likes_total,
+         (SELECT COUNT(*) FROM ig_post_likes WHERE liked_at >= ?) AS likes_today`,
+      [cutoff, cutoff, nyNow().slice(0, 10) + ' 00:00:00']);
+    return r;
+  });
+}
+
+/** Post codes among `codes` that ig_post_likes already holds. */
+async function alreadyLikedCodes(codes) {
+  if (!codes.length) return new Set();
+  return withDbRetry('alreadyLikedCodes', async () => {
+    const [rows] = await (await db()).query(
+      'SELECT post_code FROM ig_post_likes WHERE post_code IN (?)', [codes]);
+    return new Set(rows.map((r) => r.post_code));
+  });
+}
+
+/** Best effort: a failed write is logged, never fatal. Nothing is written in a dry run. */
+async function bestEffortWrite(label, fn) {
+  if (DRY_RUN || !profileLikesReady) return;
+  try {
+    await withDbRetry(label, fn);
+  } catch (e) {
+    log('DB', `${label} not recorded: ${e.code || e.message}`);
+    jlog({ action: 'db-write-failed', label, error: e.code || e.message });
+  }
+}
+
+async function recordPostLike(code, owner, source) {
+  await bestEffortWrite('recordPostLike', async () => {
+    await (await db()).query(
+      'INSERT IGNORE INTO ig_post_likes (post_code, owner_username, source, liked_at) VALUES (?, ?, ?, ?)',
+      [code, owner || null, source, nyNow()]);
+  });
+}
+
+/** Add an account the script follows (or found followed) to ig_own_following. */
+async function addOwnFollowing(target, source) {
+  if (!target || !target.ig_user_id) return;
+  await bestEffortWrite('addOwnFollowing', async () => {
+    const now = nyNow();
+    await (await db()).query(
+      `INSERT INTO ig_own_following
+         (ig_user_id, username, is_private, source, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE username = VALUES(username), last_seen_at = VALUES(last_seen_at)`,
+      [String(target.ig_user_id), target.username, target.is_private ? 1 : 0, source, now, now]);
+  });
+}
+
+/** Record a visit to an account we follow: when, why nothing was liked, and a like. */
+async function noteOwnVisit(t, note, liked) {
+  await bestEffortWrite('noteOwnVisit', async () => {
+    const now = nyNow();
+    await (await db()).query(
+      `UPDATE ig_own_following
+          SET last_visited_at = ?, visit_note = ?, last_liked_at = IF(?, ?, last_liked_at)
+        WHERE ig_user_id = ?`,
+      [now, note, liked ? 1 : 0, now, String(t.ig_user_id)]);
+  });
+}
+
+/** A pending request is still pending (or gone): check again in PROFILE_REVISIT_DAYS days. */
+async function noteRequestChecked(t) {
+  await bestEffortWrite('noteRequestChecked', async () => {
+    await (await db()).query('UPDATE ig_accounts SET request_checked_at = ? WHERE id = ?', [nyNow(), t.account_id]);
+  });
+}
+
+/** A pending request was accepted: the queue row becomes followed, the account joins ig_own_following. */
+async function recordRequestAccepted(t) {
+  await bestEffortWrite('recordRequestAccepted', async () => {
+    await (await db()).query(
+      `UPDATE ig_accounts
+          SET follow_status = 'followed', follow_note = ?, request_checked_at = ?
+        WHERE id = ? AND follow_status = 'requested'`,
+      [`request accepted, seen ${nyNow()}`, nyNow(), t.account_id]);
+  });
+  await addOwnFollowing({ ig_user_id: t.ig_user_id, username: t.username, is_private: 1 }, 'request_accepted');
+}
+
+/** Close an open post dialog; fall back to reloading the profile. */
+async function closePost(page, username) {
+  await page.keyboard.press('Escape').catch(() => {});
+  await sleep(rand(800, 1600));
+  if (await page.locator('[role="dialog"]').count()) {
+    await page.goto(`https://www.instagram.com/${username}/`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await sleep(rand(1500, 2500));
+  }
+}
+
+/**
+ * Open a random account we follow and like one of its recent posts or reels.
+ *
+ * Returns { liked: boolean, failed?: boolean }. failed means a Like click did
+ * not register: the caller turns the action off for the rest of the run.
+ * Throws ActionBlocked on Instagram's block message, like every other action.
+ */
+async function likeFromProfile(page) {
+  const t = await pickProfileTarget();
+  if (!t) {
+    log('PLIKE', 'no followed account is due for a visit');
+    return { liked: false };
+  }
+  profileVisitedThisRun.add(String(t.ig_user_id));
+
+  log('PLIKE', `opening @${t.username}${t.kind === 'requested' ? ' (checking a pending follow request)' : ''}`);
+  await page.goto(`https://www.instagram.com/${t.username}/`, { waitUntil: 'domcontentloaded' });
+  await sleep(rand(2500, 4500));
+
+  const profile = await waitForProfile(page);
+  if (profile.state === 'missing') {
+    log('PLIKE', `@${t.username}: profile not found`);
+    if (t.kind === 'own') await noteOwnVisit(t, 'profile not found', false);
+    else await noteRequestChecked(t);
+    return { liked: false };
+  }
+
+  const decision = visitDecision(t.kind, profile.state === 'ready' && profile.found ? profile.found.label : null);
+  jlog({ action: 'profile-visit', user: t.username, kind: t.kind, decision });
+
+  if (decision === 'still_pending' || decision === 'request_gone') {
+    log('PLIKE', decision === 'still_pending'
+      ? `@${t.username}: request still pending, checking again in ${PROFILE_REVISIT_DAYS} days`
+      : `@${t.username}: request no longer pending (button says Follow), not clicking it`);
+    await noteRequestChecked(t);
+    return { liked: false };
+  }
+  if (decision === 'not_following' || decision === 'no_button') {
+    log('PLIKE', `@${t.username}: ${decision === 'not_following' ? 'we no longer follow this account' : 'no follow button'}`);
+    if (t.kind === 'own') await noteOwnVisit(t, decision === 'not_following' ? 'not followed any more' : 'no follow button', false);
+    else await noteRequestChecked(t);
+    return { liked: false };
+  }
+  if (decision === 'accepted') {
+    log('PLIKE', `@${t.username}: follow request was accepted, recording it as followed`);
+    await recordRequestAccepted(t);
+    t.kind = 'own';
+  }
+
+  // Look at the profile for a moment before opening anything.
+  await page.mouse.wheel(0, randInt(150, 450));
+  await sleep(rand(1500, 3500));
+
+  const hrefs = await page.locator(PROFILE_TILE_SEL).evaluateAll(
+    (as, n) => as.slice(0, n).map((a) => a.getAttribute('href')), PROFILE_RECENT_TILES);
+  if (!hrefs.length) {
+    log('PLIKE', `@${t.username}: no posts visible`);
+    await noteOwnVisit(t, 'no posts visible', false);
+    return { liked: false };
+  }
+
+  const liked = await alreadyLikedCodes(hrefs.map(postCodeFromHref).filter(Boolean)).catch(() => new Set());
+  const candidates = shuffled(hrefs).filter((h) => !liked.has(postCodeFromHref(h)));
+
+  let tries = 0;
+  for (const href of candidates) {
+    if (tries >= PROFILE_TRIES) break;
+    tries++;
+    const code = postCodeFromHref(href);
+
+    await page.locator(`main a[href="${href}"]`).first().click();
+    try {
+      await page.locator(POST_BAR_SEL).first().waitFor({ state: 'visible', timeout: 10000 });
+    } catch (_) {
+      log('PLIKE', `@${t.username}: post ${code} did not open`);
+      await closePost(page, t.username);
+      continue;
+    }
+    await sleep(rand(2500, 6000));     // look at the post
+
+    if (await page.locator(`${POST_BAR_SEL} svg[aria-label="Unlike"]`).count()) {
+      log('PLIKE', `@${t.username}: post ${code} already liked, trying another`);
+      await closePost(page, t.username);
+      continue;
+    }
+    const btn = page.locator(`${POST_BAR_SEL} div[role="button"]:has(svg[aria-label="Like"])`).first();
+    if (!(await btn.count())) {
+      log('PLIKE', `@${t.username}: no like button on post ${code}`);
+      await closePost(page, t.username);
+      continue;
+    }
+
+    if (DRY_RUN) {
+      log('PLIKE', `dry run, would like post ${code} by @${t.username}`);
+      await closePost(page, t.username);
+      return { liked: false };
+    }
+
+    await btn.click();
+    await sleep(rand(1200, 2500));
+    if (await isActionBlocked(page)) {
+      await shot(page, `plike-blocked-${t.username}`);
+      throw new ActionBlocked(`blocked while liking a post by @${t.username}`);
+    }
+    if (!(await page.locator(`${POST_BAR_SEL} svg[aria-label="Unlike"]`).count())) {
+      const f = await shot(page, `plike-not-registered-${t.username}`);
+      log('PLIKE', `@${t.username}: like on post ${code} did not register, screenshot ${f}`);
+      jlog({ action: 'profile-like', user: t.username, post: code, ok: false });
+      await noteOwnVisit(t, 'like did not register', false);
+      await closePost(page, t.username);
+      return { liked: false, failed: true };
+    }
+
+    log('PLIKE', `liked post ${code} by @${t.username}`);
+    jlog({ action: 'profile-like', user: t.username, post: code, ok: true });
+    await recordPostLike(code, t.username, 'profile');
+    await noteOwnVisit(t, null, true);
+    await sleep(rand(1500, 4000));
+    await closePost(page, t.username);
+    return { liked: true };
+  }
+
+  log('PLIKE', `@${t.username}: nothing to like among the ${hrefs.length} most recent posts`);
+  await noteOwnVisit(t, 'recent posts already liked or would not open', false);
+  return { liked: false };
 }
 
 // ------------------------------------------------------ where the script runs
@@ -1415,6 +1805,16 @@ async function checkDb() {
     console.log(`Latest Apify run: #${r.id} @${r.source_username} ${r.data_to_scrape}, ${r.status}, ` +
                 `${r.items_imported} of ${r.items_total} items imported, started ${r.started_at}`);
   }
+  // Profile likes (added 2026-10-15).
+  const plReady = await checkProfileLikesSchema().catch(() => false);
+  if (!plReady) {
+    console.log('Profile likes: tables missing, open ?action=migrate in the web app once');
+  } else {
+    const d = await profileTargetsDue();
+    console.log(`Profile likes: ${d.own_total} followed accounts stored, ${d.own_due} due for a visit, ` +
+                `${d.requests_due} pending requests due for a check`);
+    console.log(`  posts liked: ${d.likes_total} recorded, ${d.likes_today} today`);
+  }
   console.log('');
   console.log('OK: this is the remote database. The follow run will use it.');
 }
@@ -1474,6 +1874,21 @@ async function main() {
   if (eligible !== null) console.log(`Eligible:  ${eligible} accounts match right now`);
   if (MAX_MINUTES > 0) console.log(`Stop after ${MAX_MINUTES} minutes, whichever comes first`);
   console.log(`Warm-up:   ${NO_WARMUP ? 'disabled (--no-warmup)' : '2 to 4 browsing actions before the first follow'}`);
+  // Profile likes need the tables the web app's migrate action creates.
+  // Checked even with --no-profile-likes: feed likes and new follows record into
+  // the same tables.
+  const plTables = await checkProfileLikesSchema().catch(() => false);
+  let plikeOff = NO_PROFILE_LIKES ? 'disabled (--no-profile-likes)' : null;
+  if (!plikeOff && !plTables) plikeOff = 'off: tables missing, open ?action=migrate in the web app once';
+  if (plikeOff) {
+    console.log(`Profile likes: ${plikeOff}`);
+  } else {
+    const due = await profileTargetsDue().catch(() => null);
+    console.log(`Profile likes: ${PROFILE_LIKES_RANGE[0]}-${PROFILE_LIKES_RANGE[1]} an hour, at least ` +
+                `${PROFILE_LIKE_MIN_GAP_MS / 60000} min apart, at most ${PROFILE_LIKES_PER_RUN_MAX} this run` +
+                (due ? `; ${due.own_due} of ${due.own_total} followed accounts and ${due.requests_due} pending requests due` : ''));
+  }
+  console.log(`Likes cap: ${TOTAL_LIKES_PER_HOUR_MAX} an hour, feed and profile likes together`);
   console.log('');
 
   if (eligible !== null && eligible < FOLLOW_TARGET) {
@@ -1483,6 +1898,23 @@ async function main() {
 
   const { page, close } = await connect();
   await checkSignedIn(page);
+
+  if (PROFILE_LIKE_ONCE) {
+    if (plikeOff) fail(`--profile-like-once: profile likes are ${plikeOff}`);
+    let code = 0;
+    try {
+      const r = await likeFromProfile(page);
+      log('PLIKE', r.liked ? 'done, one post liked' : `done, nothing liked${r.failed ? ' (the like did not register)' : ''}`);
+      jlog({ action: 'summary', mode: 'profile-like-once', liked: !!r.liked, failed: !!r.failed });
+      if (r.failed) code = 1;
+    } catch (e) {
+      if (e instanceof ActionBlocked) { log('STOP', e.message); code = 2; }
+      else { log('FAIL', e.message); await shot(page, 'plike-once-fatal'); code = 1; }
+    }
+    if (pool) await pool.end().catch(() => {});
+    await close().catch(() => {});
+    process.exit(code);
+  }
 
   const started = Date.now();
   let follows = 0;
@@ -1497,6 +1929,24 @@ async function main() {
   };
   let budgetResetAt = Date.now() + 3600 * 1000;
 
+  // Profile likes (added 2026-10-15). totalLikesHour counts real likes only,
+  // feed and profile together, against TOTAL_LIKES_PER_HOUR_MAX.
+  const plike = {
+    budget: randInt(PROFILE_LIKES_RANGE[0], PROFILE_LIKES_RANGE[1]),
+    thisHour: 0,
+    thisRun: 0,
+    visits: 0,
+    lastAttemptAt: 0,
+    disabled: plikeOff,
+  };
+  const plikeLimits = {
+    perRunMax: PROFILE_LIKES_PER_RUN_MAX,
+    totalPerHourMax: TOTAL_LIKES_PER_HOUR_MAX,
+    minGapMs: PROFILE_LIKE_MIN_GAP_MS,
+  };
+  let totalLikesHour = 0;
+  let profileLikes = 0;
+
   try {
     // Warm-up: behave like someone who just opened Instagram before doing
     // anything that touches another account. Skipped with --no-warmup, which is
@@ -1508,7 +1958,10 @@ async function main() {
         const opener = pick(['scroll', 'scroll', 'story', 'like']);
         try {
           if (opener === 'story') { await watchStories(page); stories++; budget.stories--; }
-          else if (opener === 'like') { await likePost(page); likes++; budget.likes--; }
+          else if (opener === 'like') {
+            budget.likes--;
+            if (await likePost(page)) { likes++; totalLikesHour++; }
+          }
           else { await scrollFeed(page); }
         } catch (e) {
           if (e instanceof ActionBlocked) throw e;
@@ -1528,8 +1981,12 @@ async function main() {
         budget.likes = randInt(LIKES_PER_HOUR[0], LIKES_PER_HOUR[1]);
         budget.stories = randInt(STORIES_PER_HOUR[0], STORIES_PER_HOUR[1]);
         budget.reads = randInt(READS_PER_HOUR[0], READS_PER_HOUR[1]);
+        plike.budget = randInt(PROFILE_LIKES_RANGE[0], PROFILE_LIKES_RANGE[1]);
+        plike.thisHour = 0;
+        totalLikesHour = 0;
         budgetResetAt = Date.now() + 3600 * 1000;
-        log('INFO', `hourly budgets reset: ${budget.likes} likes, ${budget.stories} stories, ${budget.reads} reads`);
+        log('INFO', `hourly budgets reset: ${budget.likes} likes, ${budget.stories} stories, ${budget.reads} reads, ` +
+                    `${plike.disabled ? 'no' : plike.budget} profile likes`);
       }
 
       if (Date.now() >= nextFollowAt) {
@@ -1547,14 +2004,28 @@ async function main() {
 
       // Cooldown: do something a person would be doing.
       const options = [];
-      if (budget.likes > 0) options.push('like');
+      if (budget.likes > 0 && totalLikesHour < TOTAL_LIKES_PER_HOUR_MAX) options.push('like');
+      if (profileLikeGate(plike, totalLikesHour, Date.now(), plikeLimits).ok) options.push('plike');
       if (budget.stories > 0) options.push('story');
       if (budget.reads > 0) options.push('read');
       options.push('scroll', 'scroll');      // scrolling is always plausible
 
       const action = pick(options);
       try {
-        if (action === 'like') { await likePost(page); budget.likes--; likes++; }
+        if (action === 'like') {
+          budget.likes--;
+          if (await likePost(page)) { likes++; totalLikesHour++; }
+        }
+        else if (action === 'plike') {
+          plike.lastAttemptAt = Date.now();
+          plike.visits++;
+          const r = await likeFromProfile(page);
+          if (r.liked) { plike.thisHour++; plike.thisRun++; profileLikes++; totalLikesHour++; }
+          if (r.failed) {
+            plike.disabled = 'off for this run: a like did not register';
+            log('WARN', 'profile likes turned off for the rest of this run, a like did not register');
+          }
+        }
         else if (action === 'story') { await watchStories(page); budget.stories--; stories++; }
         else if (action === 'read') { await readComments(page); budget.reads--; reads++; }
         else { await scrollFeed(page); }
@@ -1589,7 +2060,9 @@ async function main() {
   console.log(`Stopped:   ${stopReason}`);
   console.log(`Ran for:   ${mins} min`);
   console.log(`Follows:   ${follows} attempted this run`);
-  console.log(`Filler:    ${likes} likes, ${stories} story sets, ${reads} comment reads`);
+  console.log(`Filler:    ${likes} feed likes, ${stories} story sets, ${reads} comment reads`);
+  console.log(`Profiles:  ${plike.visits} visited, ${profileLikes} posts liked` +
+              (plike.disabled ? ` (${plike.disabled})` : ''));
   console.log(`Queue now: ${after.pending || 0} pending, ${after.followed || 0} followed, ` +
               `${after.requested || 0} requested, ${after.error || 0} error`);
   console.log('');
@@ -1604,7 +2077,8 @@ async function main() {
     console.log('');
   }
 
-  jlog({ action: 'summary', stopReason, minutes: mins, follows, likes, stories, reads, journalledWrites });
+  jlog({ action: 'summary', stopReason, minutes: mins, follows, likes, profileLikes,
+         profileVisits: plike.visits, stories, reads, journalledWrites });
 
   if (pool) await pool.end().catch(() => {});
   await close().catch(() => {});

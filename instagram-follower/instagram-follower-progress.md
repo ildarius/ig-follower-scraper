@@ -209,6 +209,13 @@ repository (github.com/ildarius/ig-follower-scraper). This folder used to be
       on the VPS prints STOP and exits 1, and that `instagram-follower/package.json` returns 403 in a
       browser.
 
+## Profile likes, 2026-10-15
+
+New sixth action: open a random account we follow and like one of its 6 most recent posts or reels,
+1 to 2 an hour, at least 20 minutes apart, at most 15 a run, each account at most every 14 days. The
+same visits check pending follow requests by the profile button. Plan, decisions and progress:
+[profile-likes-progress.md](profile-likes-progress.md). All five steps done; first real profile like on 2026-10-15 at 12:40 (post DPRn4wxiVW9 by @kavamamastore).
+
 ## Phase 3 - test
 
 - [ ] `--dry-run` full pass, no clicks, no MySQL writes.

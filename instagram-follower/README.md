@@ -70,6 +70,30 @@ node instagram-follower.js --only "user1,user2,user3" --follows 3 --no-warmup --
 
 Add `--dry-run` to click nothing and write nothing.
 
+### Profile likes (added 2026-10-15)
+
+The daily run also opens, now and then, a random account @verifiedbotanicals follows and likes one
+of its 6 most recent posts or reels. Nothing extra to type: it is on by default. 1 to 2 an hour, at
+least 20 minutes apart, at most 15 a run, the same account no sooner than every 14 days, never a
+post that is already liked. Feed likes and profile likes together stay at or under 10 an hour.
+Pending follow requests are checked on the same visits: when the profile button says `Following`
+the request was accepted, and the queue row becomes `followed`.
+
+To test it on its own, one profile visit and then stop, no follows:
+
+```powershell
+node instagram-follower.js --profile-like-once --dry-run
+node instagram-follower.js --profile-like-once
+```
+
+The first opens a post and clicks nothing; the second likes it. `--check-db` shows how many
+accounts are due and how many posts have been liked. To leave profile likes out of a run, add
+`--no-profile-likes`.
+
+If the banner says `Profile likes: off: tables missing`, open
+`https://seo.bizousoft.com/ig-follower-scraper/web/public/api.php?action=migrate` once while signed
+in as admin.
+
 ### One-time setup (done 2026-10-14, for reference)
 
 - `.env` holds `DB_NAME`, `DB_USER`, `DB_PASS` from the VPS `config.php`, and `DB_SSH_USER=bizousoft`,
@@ -104,8 +128,8 @@ folder exists there too. The script refuses to start there; see "Where the scrip
 
 ## Actions
 
-Five actions, chosen at random each cycle, with randomized pauses between them. Only the follow
-action is rate limited; the other four run freely and fill the cooldown window.
+Six actions, chosen at random each cycle, with randomized pauses between them. The follow action
+runs on its cooldown and the profile like on its own pacing; the other four fill the time between.
 
 | # | Action | What it does |
 |---|---|---|
@@ -113,7 +137,8 @@ action is rate limited; the other four run freely and fill the cooldown window.
 | 2 | Scroll the feed | Scrolls the home feed in variable increments with variable pauses, sometimes scrolling back up. |
 | 3 | Like a post | Picks a random post currently in the feed viewport, reads the like button's `aria-label`, and clicks only if it reads "Like" rather than "Unlike". Already-liked posts are skipped, never toggled off. |
 | 4 | Read comments | Opens a profile from the feed, opens one of its posts, scrolls the comment list, closes the post, returns to the feed. No comment text is stored. This is dwell time only. |
-| 5 | Follow from the queue | Takes the next `ig_accounts` row whose `follow_status` is `pending`, opens `instagram.com/<username>/`, clicks Follow, verifies the button changed to "Following", writes the result and the timestamp back to that row. |
+| 5 | Follow from the queue | Takes the next `ig_accounts` row whose `follow_status` is `pending`, opens `instagram.com/<username>/`, clicks Follow, verifies the button changed to "Following", writes the result and the timestamp back to that row. A follow (or an account found already followed) is also added to `ig_own_following`. |
+| 6 | Like from a profile (added 2026-10-15) | Picks at random an account in `ig_own_following` not visited in 14 days, or a `requested` queue row not checked in 14 days. Opens its profile and reads the follow button. `Following`: opens one of the 6 most recent tiles (pinned posts and reels included) that `ig_post_likes` does not hold, and clicks Like only if the icon reads "Like"; tries a second tile if the first is already liked. `Requested`: the request is still pending, nothing is liked, the check date is written. `Follow` on a requested account: the request was declined or withdrawn; nothing is clicked. A like that does not register turns the action off for the rest of the run. Details in `profile-likes-progress.md`. |
 
 Action 5 runs only when the cooldown has elapsed. The cooldown is a fresh random value between 180
 and 300 seconds, drawn after each attempt and measured from the attempt, not from its outcome. A
@@ -128,6 +153,9 @@ failed follow starts the same cooldown as a successful one.
 | Likes | 5 to 10 per hour | `--likes-per-hour` |
 | Stories | 5 to 15 per hour | `--stories-per-hour` |
 | Comment reads | 3 to 6 per hour | `--reads-per-hour` |
+| Profile likes | 1 to 2 per hour, at least 20 min apart, at most 15 per run | `--profile-likes-per-hour`, `--no-profile-likes` |
+| All likes together | at most 10 per hour (feed and profile) | none, `TOTAL_LIKES_PER_HOUR_MAX` in the script |
+| Profile revisit | same account no sooner than 14 days | none, `PROFILE_REVISIT_DAYS` in the script |
 
 The cooldown averages 4 minutes, so 100 follows needs 99 gaps averaging 4 minutes plus roughly 20 to
 40 seconds per attempt for navigation and verification. A 100-follow run therefore takes about 6.5 to
@@ -498,13 +526,15 @@ server.
 
 | File | Purpose |
 |---|---|
-| `instagram-follower.js` | The automation. Node + Playwright, about 1,380 lines. |
+| `instagram-follower.js` | The automation. Node + Playwright, about 2,130 lines. |
 | `package.json` | Pins playwright, mysql2 and dotenv. `npm run login` / `dry-run` / `follow`. |
 | `.env` | Remote database name, user and password, and the SSH tunnel settings. Copied from `.env.example`. Gitignored. |
 | `.env.example` | Template, with every setting explained and the command that reads the database values from the VPS. |
 | `pending-writes.jsonl` | Follow outcomes that could not be written to the database. Created only on failure. Replay with `--replay-journal`. Gitignored. |
 | `tests/db-retry-test.js` | Tests for the retry helper. `node tests/db-retry-test.js`. |
 | `tests/remote-db-guard-test.js` | Tests for the machine guard, the SSH tunnel, the server identity guard and the startup refusals. `node tests/remote-db-guard-test.js`. On a non-Windows machine the startup checks confirm the machine guard stops the script; the settings refusals are checked when it runs on the PC. |
+| `tests/profile-likes-test.js` | Tests for the profile-likes action: the pure helpers, the pacing over 12 simulated hours, and `likeFromProfile` against a fake page and a fake database (already-liked posts, pending, accepted and declined requests, a like that does not register, an action block, a dry run). `node tests/profile-likes-test.js`. |
+| `profile-likes-progress.md` | Plan, decisions and progress for the profile-likes action. |
 | `archive/` | Old versions of the script and the obsolete `follow-targets.csv`. Gitignored, so it stays on this PC only. |
 | `run-log.jsonl` | One JSON line per action, with a New York timestamp and outcome. Check pacing here after a run. |
 | `run-screenshots/` | One screenshot per failure. First place to look when something goes wrong. |
@@ -529,7 +559,10 @@ server.
 | `--no-warmup` | Skip the warm-up and go straight to the first follow. For testing, when the wait is in the way. |
 | `--cdp` / `--chrome-profile` | Override the CDP endpoint or the profile directory. |
 | `--replay-journal` | Apply `pending-writes.jsonl` to the database, then exit. Opens no browser. |
-| `--check-db` | Open the tunnel, check the server is the VPS, print its hostname, the queue counts and the eligible count, then exit. Opens no browser and writes nothing. |
+| `--check-db` | Open the tunnel, check the server is the VPS, print its hostname, the queue counts and the eligible count, the following-list figures and the profile-likes figures (accounts due, requests due, posts liked), then exit. Opens no browser and writes nothing. |
+| `--profile-likes-per-hour N` or `N-M` | Profile likes per hour, drawn afresh each hour. Default `1-2`. The 20-minute gap, the 15-per-run maximum and the 10-likes-an-hour total still apply. |
+| `--no-profile-likes` | Leave profile likes out of this run. Feed likes and follows are still recorded in `ig_post_likes` and `ig_own_following`. |
+| `--profile-like-once` | Test mode: one profile visit (and one like, unless `--dry-run`), then exit. No follows. Exit code 1 if the like did not register, 2 on an action block. |
 
 **The run is headed by default**, so the window is visible and every action can be watched.
 
