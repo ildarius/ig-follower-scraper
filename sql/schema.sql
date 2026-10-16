@@ -172,3 +172,12 @@ CREATE TABLE IF NOT EXISTS `ig_post_likes` (
 
 -- When the follow script last found a follow request still pending.
 -- ALTER TABLE `ig_accounts` ADD COLUMN `request_checked_at` DATETIME NULL AFTER `follow_note`;
+
+-- Added 2026-10-16 for review.php, the one-at-a-time review screen. VALID keeps
+-- follow_status = 'pending' and stamps these; SKIP writes 'skipped'. Applied by
+-- ?action=migrate or Review::ensureSchema().
+-- ALTER TABLE `ig_accounts`
+--   ADD COLUMN `reviewed_at` DATETIME NULL COMMENT 'America/New_York wall time, written by review.php',
+--   ADD COLUMN `reviewed_by` VARCHAR(255) NULL,
+--   ADD COLUMN `review_decision` ENUM('valid','skip') NULL,
+--   ADD COLUMN `review_token` CHAR(32) NULL COMMENT 'lets review.php undo exactly one decision';

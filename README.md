@@ -15,6 +15,7 @@ correct them here if they differ:
 
 - Dashboard (admin): https://seo.bizousoft.com/ig-follower-scraper/web/public/index.php
 - Accounts browser: https://seo.bizousoft.com/ig-follower-scraper/web/public/accounts.php
+- Review one by one (phone): https://seo.bizousoft.com/ig-follower-scraper/web/public/review.php
 
 ### Deploy a change to the VPS
 
@@ -152,7 +153,8 @@ walks down the list without paying twice for anyone.
 ### Every endpoint
 
 Every action below requires an authenticated caller. Only `accounts-search`, `accounts-facets`,
-`accounts-bulk` and `queue-stats` are available to the operator role; the rest are admin only. See
+`accounts-bulk`, `queue-stats` and the three `review-*` actions are available to the operator role;
+the rest are admin only. See
 [Authentication and roles](#authentication-and-roles).
 
 | Endpoint | What it does |
@@ -179,6 +181,9 @@ Every action below requires an authenticated caller. Only `accounts-search`, `ac
 | `?action=bio-search&q=chronic&n=25` | Search enriched bios |
 | `?action=raw&run=N&n=2[&clean=0]` | Raw dataset items, unmapped. `clean=0` shows hidden fields |
 | `?action=probe&actor=X&input=<json>&wait=90` | Run any actor with any input, return its raw output |
+| `?action=review-next` | Next account for review.php (pending, not yet reviewed, lowest id) and how many are left |
+| `POST ?action=review-decide` `{id, decision}` | `valid` or `skip` one account. First decision wins; returns a token for undo |
+| `POST ?action=review-undo` `{id, token}` | Undo that one decision, only if the row is unchanged since |
 | `?action=migrate` | Apply schema additions idempotently |
 | `?action=dump[&data=0][&tables=a,b]` | Full SQL backup written to `data/`. `data=0` for schema only |
 
@@ -316,6 +321,9 @@ Ildar can also run everything from PowerShell with `cli.php`, which has no reque
 | `cli.php` | PowerShell entry point. |
 | `web/public/index.php` | Dashboard. Admin only. |
 | `web/public/accounts.php` | Accounts browser. The page the employee uses. |
+| `web/public/review.php` | Review screen for a phone: one pending account at a time, VALID or SKIP. |
+| `src/Review.php` | Review queue, decide and undo, and the four review columns on `ig_accounts`. |
+| `tests/review-test.php` | Review decisions, first-decision-wins, undo guards. SQLite, no MySQL. |
 | `web/public/login.php` | Uses the parent login/logout for `external`; has a local form for `builtin`. |
 | `web/public/page-guard.php` | Included first by every page. Authenticates, then checks the role. |
 | `web/public/api.php` | JSON endpoint behind both pages. Authenticates and checks the role on every request. |
@@ -413,8 +421,8 @@ for application operations. The local `.htaccess` blocks direct access to source
 and data files, disables directory listings, and sends the project root to the accounts browser.
 
 `src/Acl.php` answers what that role may do. The operator role, meaning the employee, may open
-`accounts.php` and call four actions: `accounts-search`, `accounts-facets`, `accounts-bulk` and
-`queue-stats`. The admin role may do everything. The list is positive and closed, so an action added
+`accounts.php` and `review.php` and call `accounts-search`, `accounts-facets`, `accounts-bulk`,
+`queue-stats`, `review-next`, `review-decide` and `review-undo`. The admin role may do everything. The list is positive and closed, so an action added
 to `api.php` next month is denied to the operator until it is named in `Acl`, rather than exposed by
 having been forgotten.
 
@@ -546,9 +554,31 @@ One row per Instagram account ever seen, unique on `ig_user_id`. This table is t
 | `follow_status` | `pending`, `followed`, `requested`, `already_following`, `error`, `skipped`. Defaults to `pending`. |
 | `follow_attempted_at` | America/New_York wall time. Written by PHP, not by MySQL, so no timezone tables are needed. |
 | `follow_note` | Error reason when `follow_status` is `error`. |
+| `reviewed_at`, `reviewed_by`, `review_decision`, `review_token` | Written by review.php. See below. |
 
 A re-scrape never resets `follow_status`, `follow_attempted_at` or `follow_note`. The upsert only
 touches the profile fields and `last_seen_at`.
+
+#### The review screen (added 2026-10-16)
+
+`review.php` shows one `pending` account at a time on a phone with two buttons. **VALID** leaves
+`follow_status` as `pending`, so the follow script still follows it, and only stamps the review
+columns, which takes it off the review screen. **SKIP** writes `skipped` with the note
+`skipped in review`, the same as the accounts browser's "Do not follow", so "Revert to pending"
+undoes it. Marking VALID does not make the follow script follow only reviewed accounts; unreviewed
+pending accounts are still followed.
+
+The review queue is `pending` with `reviewed_at` NULL, lowest id first, the order the follow script
+uses. Both decisions apply only to a row that is still pending and unreviewed, so with two reviewers
+the first one wins. A bulk skip or revert in the accounts browser clears all four review columns, so
+a reverted row comes back to the review screen and an old undo cannot touch it. The columns are added
+by `?action=migrate`, or on first use of the accounts browser or review screen.
+
+Because the reviewer starts at the same row the follow script is about to open, the follow script
+re-reads the row's status just before clicking Follow and leaves it alone if it is no longer
+`pending`, and its result is written only to a row that is still `pending`. A skip that lands in the
+few seconds after the click is not undone on Instagram; the script logs a `WARN` line saying it was
+not recorded.
 
 ### `ig_relations`
 

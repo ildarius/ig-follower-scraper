@@ -9,6 +9,9 @@
  *   ?action=abort[&run=ID]
  *   ?action=stats
  *   ?action=queue&n=20
+ *   ?action=review-next                     next account for review.php
+ *   POST ?action=review-decide {id, decision: valid|skip}
+ *   POST ?action=review-undo   {id, token}
  */
 declare(strict_types=1);
 
@@ -88,12 +91,35 @@ try {
             respond(['ok' => true] + AccountsBrowser::facets());
 
         case 'accounts-search':
+            // Search reads review_decision and bulk clears the review columns,
+            // so both make sure the columns exist first.
+            Review::ensureSchema();
             respond(['ok' => true] + AccountsBrowser::search($_GET));
+
+        case 'review-next':
+            Review::ensureSchema();
+            respond(['ok' => true] + Review::next());
+
+        case 'review-decide':
+        case 'review-undo':
+            if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+                respond(['ok' => false, 'error' => $action . ' requires POST'], 405);
+            }
+            $body = json_decode((string) file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                respond(['ok' => false, 'error' => 'request body must be a JSON object'], 400);
+            }
+            Review::ensureSchema();
+            $result = $action === 'review-decide'
+                ? Review::decide((int) ($body['id'] ?? 0), (string) ($body['decision'] ?? ''), $authUser['username'])
+                : Review::undo((int) ($body['id'] ?? 0), (string) ($body['token'] ?? ''), $authUser['username']);
+            respond(['ok' => true] + $result);
 
         case 'accounts-bulk':
             if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
                 respond(['ok' => false, 'error' => 'accounts-bulk requires POST'], 405);
             }
+            Review::ensureSchema();
             $body = json_decode((string) file_get_contents('php://input'), true);
             if (!is_array($body)) {
                 respond(['ok' => false, 'error' => 'request body must be a JSON object'], 400);
@@ -796,6 +822,10 @@ try {
             // for the follow script's profile-likes action. Added 2026-10-15.
             $ownFollowing = OwnFollowing::ensureSchema();
 
+            // ig_accounts.reviewed_at, reviewed_by, review_decision and
+            // review_token, for review.php. Added 2026-10-16.
+            $review = Review::ensureSchema();
+
             respond([
                 'ok'            => true,
                 'tables'        => array_map('current', Db::all('SHOW TABLES')),
@@ -803,6 +833,7 @@ try {
                 'stats_rows'    => (int) Db::scalar('SELECT COUNT(*) FROM ig_profile_stats'),
                 'kind_column'   => $hasKind === 0 ? 'added' : 'already present',
                 'own_following' => $ownFollowing,
+                'review'        => $review,
             ]);
 
         case 'own-following-rebuild':

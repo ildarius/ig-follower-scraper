@@ -24,13 +24,17 @@ final class Acl
      * filters. accounts-bulk marks accounts, subject to the extra limits in
      * operatorBulkLimits() below. queue-stats is read-only and lets the employee
      * see how much of the queue is left, which is the one number they need to
-     * judge their own progress.
+     * judge their own progress. The review-* actions back review.php, the
+     * one-profile-at-a-time screen; each writes a single row, never in bulk.
      */
     private const OPERATOR_ACTIONS = [
         'accounts-search',
         'accounts-facets',
         'accounts-bulk',
         'queue-stats',
+        'review-next',
+        'review-decide',
+        'review-undo',
     ];
 
     /**
@@ -38,6 +42,7 @@ final class Acl
      */
     private const OPERATOR_PAGES = [
         'accounts.php',
+        'review.php',
         'login.php',
     ];
 

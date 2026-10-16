@@ -71,6 +71,8 @@ $authUser = require __DIR__ . '/page-guard.php';
   .status { display:inline-block; padding:2px 7px; border-radius:999px; background:var(--chip); font-size:12px; }
   .status.pending { color:var(--accent); } .status.error { color:var(--err); }
   .status.skipped { color:var(--warn); }
+  .status.reviewed { margin-left:4px; color:var(--accent); }
+  .review-link { font-weight:600; }
   .empty { text-align:center; padding:34px; color:var(--muted); }
   .action-bar { display:none; margin-top:14px; position:sticky; bottom:10px; z-index:3; box-shadow:0 4px 18px rgba(0,0,0,.14); }
   .action-bar.show { display:block; }
@@ -85,7 +87,7 @@ $authUser = require __DIR__ . '/page-guard.php';
 </head>
 <body>
 <main class="wrap">
-  <header class="header"><div><h1>Accounts browser</h1><div class="muted">Filter and tag the Instagram follow queue.</div></div><nav class="header-links" aria-label="Account navigation"><a href="index.php">Back to dashboard</a><a class="sign-out" href="login.php?logout=1">Sign out</a></nav></header>
+  <header class="header"><div><h1>Accounts browser</h1><div class="muted">Filter and tag the Instagram follow queue.</div></div><nav class="header-links" aria-label="Account navigation"><a class="sign-out review-link" href="review.php">Review one by one</a><a href="index.php">Back to dashboard</a><a class="sign-out" href="login.php?logout=1">Sign out</a></nav></header>
 
   <form id="filter-form" class="panel">
     <div class="filters">
@@ -259,7 +261,7 @@ $authUser = require __DIR__ . '/page-guard.php';
       row.append(td(text(item.user_full_name)), td(item.followers_count === null ? '-' : Number(item.followers_count).toLocaleString(), 'num'), td(item.posts_count === null ? '-' : Number(item.posts_count).toLocaleString(), 'num'));
       row.append(td(item.is_business === null ? '-' : Number(item.is_business) ? 'Yes' : 'No'), td(Number(item.is_private) ? 'Yes' : 'No'), td(text(item.category)));
       const bio = text(item.biography), bioCell = td(bio, 'bio', bio === '-' ? '' : bio); bioCell.innerHTML = ''; const bioSpan = document.createElement('span'); bioSpan.className = 'truncate'; bioSpan.textContent = bio; bioCell.append(bioSpan); row.append(bioCell);
-      const statusCell = document.createElement('td'), status = document.createElement('span'); status.className = 'status ' + item.follow_status; status.textContent = item.follow_status.replaceAll('_',' '); statusCell.append(status); row.append(statusCell);
+      const statusCell = document.createElement('td'), status = document.createElement('span'); status.className = 'status ' + item.follow_status; status.textContent = item.follow_status.replaceAll('_',' '); statusCell.append(status); if (item.review_decision === 'valid') { const valid = document.createElement('span'); valid.className = 'status reviewed'; valid.textContent = 'valid'; valid.title = 'Marked valid on the review screen'; statusCell.append(valid); } row.append(statusCell);
       const note = text(item.follow_note), noteCell = td(note, 'note-cell', note === '-' ? '' : note); noteCell.innerHTML = ''; const noteSpan = document.createElement('span'); noteSpan.className = 'truncate'; noteSpan.textContent = note; noteCell.append(noteSpan); row.append(noteCell);
       tbody.append(row);
     });

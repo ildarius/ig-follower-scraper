@@ -658,14 +658,38 @@ async function eligibleCountOnce() {
   return Number(rows[0].n);
 }
 
+// Only a row that is still pending is written. Someone on review.php (or the
+// accounts browser) may have marked it skipped while this script had the
+// profile open, and that decision must not be overwritten. Returns the number
+// of rows changed, so the caller can warn when the write was refused.
 async function recordAttemptOnce(id, status, note) {
   const conn = await db();
-  await conn.execute(
+  const [result] = await conn.execute(
     `UPDATE ig_accounts
         SET follow_status = ?, follow_attempted_at = ?, follow_note = ?
-      WHERE id = ?`,
+      WHERE id = ? AND follow_status = 'pending'`,
     [status, nyNow(), note || null, id]
   );
+  return result.affectedRows;
+}
+
+/**
+ * Is the account still pending? Asked immediately before clicking Follow,
+ * because the target was picked several seconds earlier and a reviewer may have
+ * marked it skipped on review.php in the meantime.
+ */
+async function stillPendingOnce(id) {
+  const conn = await db();
+  const [rows] = await conn.query(
+    'SELECT follow_status, follow_note FROM ig_accounts WHERE id = ?',
+    [id]
+  );
+  if (!rows.length) return { pending: false, status: 'gone', note: null };
+  return {
+    pending: rows[0].follow_status === 'pending',
+    status: rows[0].follow_status,
+    note: rows[0].follow_note,
+  };
 }
 
 async function queueCountsOnce() {
@@ -678,10 +702,11 @@ async function queueCountsOnce() {
 
 // ------------------------------------------------- retrying database wrappers
 //
-// Four functions in this script talk to the database: nextTarget, which pulls
+// Five functions in this script talk to the database: nextTarget, which pulls
 // the next account to follow; eligibleCount, which reports how many accounts
 // pass the current filters for the startup banner; recordAttempt, which writes
-// the outcome of a follow back to ig_accounts; and queueCounts, which reports
+// the outcome of a follow back to ig_accounts; stillPending, which re-reads the
+// target's status just before the Follow click; and queueCounts, which reports
 // the queue totals. Each one below wraps the corresponding *Once function above
 // in the retry helper, so every existing call site gets the retry without
 // changing.
@@ -696,6 +721,10 @@ async function eligibleCount() {
 
 async function queueCounts() {
   return withDbRetry('queueCounts', () => queueCountsOnce());
+}
+
+async function stillPending(id) {
+  return withDbRetry('stillPending', () => stillPendingOnce(id));
 }
 
 /**
@@ -725,7 +754,17 @@ async function recordAttempt(id, status, note) {
   }
 
   try {
-    return await withDbRetry('recordAttempt', () => recordAttemptOnce(id, status, note));
+    const changed = await withDbRetry('recordAttempt', () => recordAttemptOnce(id, status, note));
+    if (changed === 0) {
+      // The row stopped being pending between the pick and this write, almost
+      // always because a reviewer skipped it. Its status is left as they set
+      // it. If this was a real follow, Instagram has it and the database says
+      // skipped, so it is printed loudly.
+      log('WARN', `id=${id} is no longer pending, so ${status} was not recorded. ` +
+        `Someone changed it while this profile was open (review screen or accounts browser).`);
+      jlog({ action: 'record-refused', id, status, note: note || null });
+    }
+    return changed;
   } catch (e) {
     const entry = {
       at: nyNow(),
@@ -1173,6 +1212,19 @@ async function followNext(page) {
   if (DRY_RUN) {
     log('FOLLOW', `dry run, would follow @${target.username}`);
     return { attempted: true, dry: true };
+  }
+
+  // Last check before the click. The target was picked several seconds ago,
+  // and a reviewer working through review.php on a phone starts at the same
+  // lowest pending id this script does, so a skip landing in that window is
+  // likely rather than rare. Skipped here, nothing was sent to Instagram, so
+  // no cooldown is spent and nothing is written.
+  const check = await stillPending(target.id);
+  if (!check.pending) {
+    log('FOLLOW', `@${target.username}: no longer pending (${check.status}` +
+      `${check.note ? ', ' + check.note : ''}), not following`);
+    jlog({ action: 'follow', user: target.username, status: 'not-pending', current: check.status, note: check.note });
+    return { attempted: false };
   }
 
   await btn.click();

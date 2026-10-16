@@ -311,7 +311,8 @@ case 'unknown-provider-throws':
     break;
 
 case 'acl-operator-actions':
-    foreach (['accounts-search', 'accounts-facets', 'accounts-bulk', 'queue-stats'] as $a) {
+    foreach (['accounts-search', 'accounts-facets', 'accounts-bulk', 'queue-stats',
+              'review-next', 'review-decide', 'review-undo'] as $a) {
         check('operator may ' . $a, Acl::allowsAction('operator', $a), true);
     }
     foreach (['start', 'enrich', 'dump', 'migrate', 'reset-cursor', 'import', 'import-all',
@@ -330,6 +331,7 @@ case 'acl-admin-actions':
 case 'acl-pages':
     check('operator opens accounts.php', Acl::allowsPage('operator', 'accounts.php'), true);
     check('operator opens login.php', Acl::allowsPage('operator', 'login.php'), true);
+    check('operator opens review.php', Acl::allowsPage('operator', 'review.php'), true);
     check('operator does NOT open index.php', Acl::allowsPage('operator', 'index.php'), false);
     check('admin opens index.php', Acl::allowsPage('admin', 'index.php'), true);
     check('unknown role opens nothing', Acl::allowsPage('guest', 'accounts.php'), false);

@@ -83,7 +83,7 @@ final class AccountsBrowser
         $rows = Db::all(
             'SELECT a.id, a.username, s.user_full_name, s.followers_count, s.posts_count,
                     s.is_business, a.is_private, s.category, s.biography,
-                    a.follow_status, a.follow_note' .
+                    a.follow_status, a.follow_note, a.review_decision' .
             $from . $where .
             ' ORDER BY ' . $sortMap[$sort] . ' ' . $dir . ', a.id ASC' .
             ' LIMIT ' . $perPage . ' OFFSET ' . $offset,
@@ -174,6 +174,10 @@ final class AccountsBrowser
             $writeParams['new_status'] = 'pending';
             $set = 'a.follow_status = :new_status, a.follow_note = NULL, a.follow_attempted_at = NULL';
         }
+        // A bulk action overrides any decision made on review.php. Clearing all
+        // four review columns, the token included, means a reverted row goes
+        // back into the review screen and an old undo cannot touch it.
+        $set .= ', a.reviewed_at = NULL, a.reviewed_by = NULL, a.review_decision = NULL, a.review_token = NULL';
 
         $pdo = Db::pdo();
         $pdo->beginTransaction();
