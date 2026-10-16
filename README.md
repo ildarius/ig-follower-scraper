@@ -184,6 +184,8 @@ the rest are admin only. See
 | `?action=review-next` | Next account for review.php (pending, not yet reviewed, lowest id) and how many are left |
 | `POST ?action=review-decide` `{id, decision}` | `valid` or `skip` one account. First decision wins; returns a token for undo |
 | `POST ?action=review-undo` `{id, token}` | Undo that one decision, only if the row is unchanged since |
+| `POST ?action=review-photo-fetch` `{id}` | Fetch and save a pending account's profile photo through HikerAPI ($0.001), unless already saved |
+| `?action=review-photo&id=N` | The saved photo for account N. Never fetches |
 | `?action=migrate` | Apply schema additions idempotently |
 | `?action=dump[&data=0][&tables=a,b]` | Full SQL backup written to `data/`. `data=0` for schema only |
 
@@ -326,6 +328,9 @@ Ildar can also run everything from PowerShell with `cli.php`, which has no reque
 | `web/public/review.php` | Review screen for a phone: one pending account at a time, VALID or SKIP. |
 | `src/Review.php` | Review queue, decide and undo, and the four review columns on `ig_accounts`. |
 | `tests/review-test.php` | Review decisions, first-decision-wins, undo guards. SQLite, no MySQL. |
+| `src/HikerApi.php` | Minimal HikerAPI client: one profile lookup by username. |
+| `src/ProfilePhoto.php` | Fetch photo: HikerAPI lookup, download from Instagram's CDN, save to `data/photos/`, with the spending limits. |
+| `tests/profile-photo-test.php` | Fetch photo limits: cache, pending only, account match, hosts, non-images, cooldown, daily budget. No network. |
 | `web/public/login.php` | Uses the parent login/logout for `external`; has a local form for `builtin`. |
 | `web/public/page-guard.php` | Included first by every page. Authenticates, then checks the role. |
 | `web/public/api.php` | JSON endpoint behind both pages. Authenticates and checks the role on every request. |
@@ -424,7 +429,7 @@ and data files, disables directory listings, and sends the project root to the a
 
 `src/Acl.php` answers what that role may do. The operator role, meaning the employee, may open
 `accounts.php` and `review.php` and call `accounts-search`, `accounts-facets`, `accounts-bulk`,
-`queue-stats`, `review-next`, `review-decide` and `review-undo`. The admin role may do everything. The list is positive and closed, so an action added
+`queue-stats`, `review-next`, `review-decide`, `review-undo`, `review-photo-fetch` and `review-photo`. The admin role may do everything. The list is positive and closed, so an action added
 to `api.php` next month is denied to the operator until it is named in `Acl`, rather than exposed by
 having been forgotten.
 
@@ -575,6 +580,20 @@ The review queue is `pending` with `reviewed_at` NULL, lowest id first. Both dec
 the first one wins. A bulk skip or revert in the accounts browser clears all four review columns, so
 a reverted row comes back to the review screen and an old undo cannot touch it. The columns are added
 by `?action=migrate`, or on first use of the accounts browser or review screen.
+
+**Fetch photo (added 2026-10-16).** The photo links the scrapers stored are signed Instagram CDN
+links that expire after a few weeks; by 2026-10-16 every one for a pending account returned 403, and
+asking Instagram directly without a login is refused on the first request, even through a
+residential proxy. The button under "Open on Instagram" therefore asks HikerAPI (the SEO dashboard's
+account, `hikerapi.token` in `config.php`) for the profile, downloads the picture, and saves it as
+`data/photos/<ig_user_id>.img`, where it never expires and is shown automatically from then on. One
+lookup costs $0.001, so photographing all ~6,600 pending accounts would cost about $6.60. Limits, in
+`src/ProfilePhoto.php`: pending accounts only; a saved photo is never fetched again; one lock, so two
+taps cannot both pay; a failed fetch waits 15 minutes before it may be retried; and
+`hikerapi.daily_photo_budget` (500) caps lookups per day. The lookup must return the same Instagram id
+as the row, so a renamed handle never saves someone else's face. Instagram only offers a larger
+picture for some accounts; otherwise the photo is 150x150. `data/photos/` must be writable by the web
+server's PHP user (it runs as `nobody` on the VPS; the folder is 0777) and is gitignored.
 
 While no VALID accounts are waiting, the reviewer starts at the same row the follow script is about
 to open, so the follow script

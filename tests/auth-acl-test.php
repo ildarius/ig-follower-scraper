@@ -312,7 +312,7 @@ case 'unknown-provider-throws':
 
 case 'acl-operator-actions':
     foreach (['accounts-search', 'accounts-facets', 'accounts-bulk', 'queue-stats',
-              'review-next', 'review-decide', 'review-undo'] as $a) {
+              'review-next', 'review-decide', 'review-undo', 'review-photo-fetch', 'review-photo'] as $a) {
         check('operator may ' . $a, Acl::allowsAction('operator', $a), true);
     }
     foreach (['start', 'enrich', 'dump', 'migrate', 'reset-cursor', 'import', 'import-all',

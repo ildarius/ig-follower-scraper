@@ -98,7 +98,43 @@ try {
 
         case 'review-next':
             Review::ensureSchema();
-            respond(['ok' => true] + Review::next());
+            $next = Review::next();
+            if ($next['account'] !== null) {
+                $next['account']['has_photo'] = ProfilePhoto::has((string) $next['account']['ig_user_id']);
+            }
+            respond(['ok' => true] + $next);
+
+        case 'review-photo-fetch':
+            // One paid HikerAPI lookup ($0.001), unless the photo is already
+            // saved. Limits are in ProfilePhoto.
+            if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+                respond(['ok' => false, 'error' => 'review-photo-fetch requires POST'], 405);
+            }
+            $body = json_decode((string) file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                respond(['ok' => false, 'error' => 'request body must be a JSON object'], 400);
+            }
+            try {
+                respond(['ok' => true] + ProfilePhoto::fetch((int) ($body['id'] ?? 0)));
+            } catch (RuntimeException $e) {
+                // Expected failures (budget, cooldown, HikerAPI or Instagram
+                // refusing) are shown to the reviewer as they are.
+                respond(['ok' => false, 'error' => $e->getMessage()], 502);
+            }
+
+        case 'review-photo':
+            // Stream a saved photo. Never fetches; review-photo-fetch does that.
+            $row = Db::one('SELECT ig_user_id FROM ig_accounts WHERE id = :id', ['id' => (int) ($_GET['id'] ?? 0)]);
+            $path = $row === null ? null : ProfilePhoto::path((string) $row['ig_user_id']);
+            $info = $path !== null && is_file($path) ? @getimagesize($path) : false;
+            if ($info === false) {
+                respond(['ok' => false, 'error' => 'No saved photo for this account.'], 404);
+            }
+            header('Content-Type: ' . $info['mime']);
+            header('Content-Length: ' . (string) filesize($path));
+            header('Cache-Control: private, max-age=86400');
+            readfile($path);
+            exit;
 
         case 'review-decide':
         case 'review-undo':

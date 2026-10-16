@@ -26,6 +26,8 @@ final class Acl
      * see how much of the queue is left, which is the one number they need to
      * judge their own progress. The review-* actions back review.php, the
      * one-profile-at-a-time screen; each writes a single row, never in bulk.
+     * review-photo-fetch spends one HikerAPI lookup ($0.001) per account at
+     * most, inside ProfilePhoto's daily budget.
      */
     private const OPERATOR_ACTIONS = [
         'accounts-search',
@@ -35,6 +37,8 @@ final class Acl
         'review-next',
         'review-decide',
         'review-undo',
+        'review-photo-fetch',
+        'review-photo',
     ];
 
     /**

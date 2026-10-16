@@ -11,3 +11,6 @@ run-screenshots/
 
 # Created by Google Drive in every folder.
 desktop.ini
+
+# Profile photos saved by the review screen's Fetch photo button.
+data/photos/

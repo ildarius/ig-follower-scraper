@@ -95,7 +95,7 @@ final class Review
         );
 
         $account = Db::one(
-            "SELECT a.id, a.username, a.full_name, a.is_verified, a.is_private,
+            "SELECT a.id, a.ig_user_id, a.username, a.full_name, a.is_verified, a.is_private,
                     s.user_full_name, s.followers_count, s.follows_count, s.posts_count,
                     s.is_business, s.category, s.biography, s.external_url
                FROM ig_accounts a

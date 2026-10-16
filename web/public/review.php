@@ -37,6 +37,7 @@ $authUser = require __DIR__ . '/page-guard.php';
   .head { display:flex; align-items:center; gap:14px; }
   .avatar { flex:none; width:72px; height:72px; border-radius:50%; background:var(--chip); color:var(--muted);
     display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:600; text-transform:uppercase; }
+  img.avatar { width:96px; height:96px; object-fit:cover; background:var(--chip); }
   .who { min-width:0; }
   .username { font-size:22px; font-weight:700; word-break:break-all; text-decoration:none; }
   .fullname { color:var(--muted); margin-top:2px; word-break:break-word; }
@@ -53,6 +54,9 @@ $authUser = require __DIR__ . '/page-guard.php';
   .site { display:inline-block; margin-top:10px; word-break:break-all; }
   .open-ig { display:block; margin-top:22px; padding:12px; text-align:center; border:1px solid var(--line);
     border-radius:8px; text-decoration:none; font-weight:600; }
+  .fetch-photo { display:block; width:100%; margin-top:10px; padding:12px; border:1px solid var(--line); border-radius:8px;
+    background:var(--bg); color:var(--fg); font:inherit; font-weight:600; cursor:pointer; }
+  .fetch-photo:disabled { opacity:.55; cursor:default; }
   .id { margin-top:14px; font-size:12px; color:var(--muted); }
   .empty { text-align:center; color:var(--muted); padding-top:30vh; }
   .toast { position:fixed; left:16px; right:16px; bottom:calc(96px + env(safe-area-inset-bottom)); margin:0 auto; max-width:600px;
@@ -137,7 +141,7 @@ $authUser = require __DIR__ . '/page-guard.php';
 
     const igUrl = 'https://www.instagram.com/' + encodeURIComponent(account.username) + '/';
     const head = el('div', 'head');
-    head.append(el('div', 'avatar', (account.username || '?').replace(/[^a-z0-9]/gi, '').slice(0, 1) || '?'));
+    head.append(account.has_photo ? photoEl(account) : el('div', 'avatar', (account.username || '?').replace(/[^a-z0-9]/gi, '').slice(0, 1) || '?'));
     const who = el('div', 'who');
     const link = el('a', 'username', '@' + account.username);
     link.href = igUrl; link.target = '_blank'; link.rel = 'noopener noreferrer';
@@ -171,7 +175,41 @@ $authUser = require __DIR__ . '/page-guard.php';
     const open = el('a', 'open-ig', 'Open on Instagram');
     open.href = igUrl; open.target = '_blank'; open.rel = 'noopener noreferrer';
     card.append(open);
+    if (!account.has_photo) {
+      const fetchBtn = el('button', 'fetch-photo', 'Fetch photo');
+      fetchBtn.type = 'button';
+      fetchBtn.addEventListener('click', () => fetchPhoto(account, fetchBtn));
+      card.append(fetchBtn);
+    }
     card.append(el('div', 'id', 'Account #' + account.id));
+  }
+
+  function photoEl(account) {
+    const img = el('img', 'avatar');
+    img.src = 'api.php?action=review-photo&id=' + encodeURIComponent(account.id);
+    img.alt = '@' + account.username;
+    return img;
+  }
+
+  // Saved on the server the first time, so it never expires and a second tap
+  // costs nothing. The result is shown only if the same account is still on
+  // screen; a reviewer who moved on keeps the next card untouched.
+  async function fetchPhoto(account, button) {
+    button.disabled = true; button.textContent = 'Fetching photo…';
+    try {
+      await api('review-photo-fetch', {id: Number(account.id)});
+      account.has_photo = true;
+      if (current && Number(current.id) === Number(account.id)) {
+        const avatar = card.querySelector('.head .avatar');
+        if (avatar) avatar.replaceWith(photoEl(account));
+        button.remove();
+      }
+    } catch (e) {
+      if (current && Number(current.id) === Number(account.id)) {
+        say(e.message, true);
+        button.disabled = false; button.textContent = 'Fetch photo';
+      }
+    }
   }
 
   async function loadNext() {

@@ -33,6 +33,15 @@ return [
 
     'timezone' => 'America/New_York',
 
+    // HikerAPI (hikerapi.com), for the review screen's Fetch photo button.
+    // $0.001 per lookup; a photo is fetched once and kept in data/photos/.
+    // Optional: without a token the button reports that it is not configured.
+    'hikerapi' => [
+        'token' => 'PUT_YOURS_HERE',
+        // Paid lookups allowed per day (America/New_York), all users together.
+        'daily_photo_budget' => 500,
+    ],
+
     'import_batch_size' => 500,
 
     /**
