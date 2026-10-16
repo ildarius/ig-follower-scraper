@@ -42,6 +42,7 @@ $authUser = require __DIR__ . '/page-guard.php';
   .fullname { color:var(--muted); margin-top:2px; word-break:break-word; }
   .badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
   .badge { padding:3px 9px; border-radius:999px; background:var(--chip); font-size:13px; }
+  .badge.business { background:#ff1f1f; color:#fff; font-weight:700; }
   .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:18px 0; text-align:center; }
   .stats div { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 4px; }
   .stats strong { display:block; font-size:19px; }
@@ -149,7 +150,8 @@ $authUser = require __DIR__ . '/page-guard.php';
     const badges = el('div', 'badges');
     if (Number(account.is_verified)) badges.append(el('span', 'badge', 'Verified'));
     badges.append(el('span', 'badge', Number(account.is_private) ? 'Private' : 'Public'));
-    if (account.is_business !== null) badges.append(el('span', 'badge', Number(account.is_business) ? 'Business' : 'Personal'));
+    // Business accounts are flagged bright red so they stand out at a glance.
+    if (account.is_business !== null) badges.append(Number(account.is_business) ? el('span', 'badge business', 'Business') : el('span', 'badge', 'Personal'));
     card.append(badges);
 
     const stats = el('div', 'stats');

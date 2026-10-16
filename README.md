@@ -175,7 +175,7 @@ the rest are admin only. See
 | `?action=queue&n=20` | Next N pending follow targets |
 | `?action=queue-stats&min_followers=50&min_posts=0` | How many pending accounts pass the follow script's filters, with bands and days of runway |
 | `?action=queue-row&username=X` | One `ig_accounts` row with its follow state, joined to its stats |
-| `?action=queue-head&n=40` | The first N rows in queue order with their statuses, plus the first row that qualifies under the 50-follower filter |
+| `?action=queue-head&n=40` | The first N rows by id with their statuses, plus the follow script's next target under its default 50-follower filter (VALID accounts first) |
 | `?action=import-followed[&apply=1]` | Mark accounts followed by hand before automation. Preview by default |
 | `?action=profile&username=X` | One enriched row, by username or `ig_user_id` |
 | `?action=bio-search&q=chronic&n=25` | Search enriched bios |
@@ -212,9 +212,11 @@ SELECT a.username, s.followers_count, s.posts_count
   JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
  WHERE a.follow_status = 'pending'
    AND s.followers_count >= 50
- ORDER BY a.id
+ ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id
  LIMIT 1;
 ```
+
+Accounts marked VALID on the review screen go first; see [the review screen](#the-review-screen-added-2026-10-16).
 
 The INNER JOIN means only enriched accounts qualify, because an unenriched account has no follower
 count. As of 2026-09-17 that is **2,130 of 10,857**. Enrichment coverage now limits how long the
@@ -565,16 +567,17 @@ touches the profile fields and `last_seen_at`.
 `follow_status` as `pending`, so the follow script still follows it, and only stamps the review
 columns, which takes it off the review screen. **SKIP** writes `skipped` with the note
 `skipped in review`, the same as the accounts browser's "Do not follow", so "Revert to pending"
-undoes it. Marking VALID does not make the follow script follow only reviewed accounts; unreviewed
-pending accounts are still followed.
+undoes it. The follow script follows VALID accounts **first** (they still have to pass its
+`--min-followers` filter), then carries on with unreviewed pending accounts in id order, so it does
+not wait for review.
 
-The review queue is `pending` with `reviewed_at` NULL, lowest id first, the order the follow script
-uses. Both decisions apply only to a row that is still pending and unreviewed, so with two reviewers
+The review queue is `pending` with `reviewed_at` NULL, lowest id first. Both decisions apply only to a row that is still pending and unreviewed, so with two reviewers
 the first one wins. A bulk skip or revert in the accounts browser clears all four review columns, so
 a reverted row comes back to the review screen and an old undo cannot touch it. The columns are added
 by `?action=migrate`, or on first use of the accounts browser or review screen.
 
-Because the reviewer starts at the same row the follow script is about to open, the follow script
+While no VALID accounts are waiting, the reviewer starts at the same row the follow script is about
+to open, so the follow script
 re-reads the row's status just before clicking Follow and leaves it alone if it is no longer
 `pending`, and its result is written only to a row that is still `pending`. A skip that lands in the
 few seconds after the click is not undone on Instagram; the script logs a `WARN` line saying it was

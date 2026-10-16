@@ -574,6 +574,12 @@ async function withDbRetry(label, fn) {
  * followed like anyone else and record 'requested'.
  *
  * --only bypasses both filters, so a named account can always be tested.
+ *
+ * Accounts marked VALID on the web app's review screen (review_decision =
+ * 'valid') go first, lowest id first, and only then the rest of the queue in id
+ * order. Added 2026-10-16. VALID only reorders: it does not bypass the filters.
+ * It also keeps this script off the account the reviewer is looking at, since
+ * the review screen starts at the lowest unreviewed id.
  */
 // A dry run writes nothing back, so without this every pick would return the
 // same first pending row. If that account already shows "Following", no
@@ -586,6 +592,10 @@ function dryRunExclusion() {
   if (!DRY_RUN || dryRunSeen.size === 0) return { sql: '', params: [] };
   return { sql: ' AND a.id NOT IN (?)', params: [[...dryRunSeen]] };
 }
+
+// Queue order: review-screen VALID accounts first, then everything else by id.
+// NULL and 'skip' both fall into the second group.
+const VALIDATED_FIRST = `CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id`;
 
 async function nextTargetOnce() {
   const conn = await db();
@@ -606,13 +616,14 @@ async function nextTargetOnce() {
 
   if (MIN_FOLLOWERS > 0) {
     const [rows] = await conn.query(
-      `SELECT a.id, a.ig_user_id, a.username, a.is_private, s.posts_count, s.followers_count
+      `SELECT a.id, a.ig_user_id, a.username, a.is_private, a.review_decision,
+              s.posts_count, s.followers_count
          FROM ig_accounts a
          JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
         WHERE a.follow_status = 'pending'
           AND s.followers_count >= ?
           AND s.posts_count >= ?${ex.sql}
-        ORDER BY a.id
+        ORDER BY ${VALIDATED_FIRST}
         LIMIT 1`,
       [MIN_FOLLOWERS, MIN_POSTS, ...ex.params]
     );
@@ -620,12 +631,13 @@ async function nextTargetOnce() {
   }
 
   const [rows] = await conn.query(
-    `SELECT a.id, a.ig_user_id, a.username, a.is_private, s.posts_count, s.followers_count
+    `SELECT a.id, a.ig_user_id, a.username, a.is_private, a.review_decision,
+            s.posts_count, s.followers_count
        FROM ig_accounts a
        LEFT JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
       WHERE a.follow_status = 'pending'
         AND (s.id IS NULL OR s.posts_count >= ?)${ex.sql}
-      ORDER BY a.id
+      ORDER BY ${VALIDATED_FIRST}
       LIMIT 1`,
     [MIN_POSTS, ...ex.params]
   );
@@ -712,7 +724,17 @@ async function queueCountsOnce() {
 // changing.
 
 async function nextTarget() {
-  return withDbRetry('nextTarget', () => nextTargetOnce());
+  try {
+    return await withDbRetry('nextTarget', () => nextTargetOnce());
+  } catch (e) {
+    // The queue orders by review_decision, a column the web app adds. Say how
+    // to fix a database that does not have it yet, instead of a bare SQL error.
+    if (e && e.code === 'ER_BAD_FIELD_ERROR' && /review_decision/.test(e.message || '')) {
+      e.message = 'ig_accounts has no review_decision column yet. Open ?action=migrate in the web app ' +
+        'once (or the accounts browser), then start the run again. ' + e.message;
+    }
+    throw e;
+  }
 }
 
 async function eligibleCount() {
@@ -1162,7 +1184,8 @@ async function followNext(page) {
   if (DRY_RUN) dryRunSeen.add(target.id);
 
   const url = `https://www.instagram.com/${target.username}/`;
-  log('FOLLOW', `opening @${target.username}${target.is_private ? ' (private)' : ''}`);
+  log('FOLLOW', `opening @${target.username}${target.is_private ? ' (private)' : ''}` +
+    `${target.review_decision === 'valid' ? ' (validated on the review screen)' : ''}`);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await sleep(rand(2500, 4500));
 

@@ -393,6 +393,7 @@ try {
             // The first N rows in queue order (by id), whatever their status.
             // Shows how much of the top of the queue is already handled, which
             // ORDER BY id alone hides.
+            Review::ensureSchema();
             $n = isset($_GET['n']) ? max(1, min(200, (int) $_GET['n'])) : 30;
             respond([
                 'ok'   => true,
@@ -407,12 +408,16 @@ try {
                 'first_pending_id' => Db::scalar(
                     "SELECT MIN(id) FROM ig_accounts WHERE follow_status = 'pending'"
                 ),
+                // The follow script's next target under its default filter
+                // (50 followers, no --only). Review-screen VALID accounts go
+                // first, as in the script's queue order.
                 'first_eligible' => Db::one(
-                    'SELECT a.id, a.username, s.followers_count
+                    "SELECT a.id, a.username, s.followers_count, a.review_decision
                        FROM ig_accounts a
                        JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
-                      WHERE a.follow_status = :st AND s.followers_count >= 50
-                      ORDER BY a.id LIMIT 1',
+                      WHERE a.follow_status = :st AND s.followers_count >= 50 AND s.posts_count >= 0
+                      ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id
+                      LIMIT 1",
                     ['st' => 'pending']
                 ),
             ]);
