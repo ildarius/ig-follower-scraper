@@ -151,6 +151,28 @@ Db::run("UPDATE ig_accounts SET follow_status = 'pending', follow_note = NULL,
 check('stale token after bulk skip and revert does nothing', Review::undo(2, $v2['token'], 'alice')['changed'], false);
 check('reverted row back in the review queue', (int) Review::next()['account']['id'], 2);
 
+echo "review order: most followers first, unenriched last, ties by id\n";
+// Start from a clean queue: everything above is taken out of it.
+Db::run("UPDATE ig_accounts SET follow_status = 'followed'");
+$add = $pdo->prepare('INSERT INTO ig_accounts (id, ig_user_id, username, follow_status) VALUES (?, ?, ?, ?)');
+$stat = $pdo->prepare('INSERT INTO ig_profile_stats (ig_user_id, followers_count) VALUES (?, ?)');
+foreach ([[20, '2020', 'small', 50], [21, '2021', 'big', 5000], [22, '2022', 'unenriched', null],
+          [23, '2023', 'big_tie', 5000], [24, '2024', 'medium', 700], [25, '2025', 'zero', 0]] as [$id, $uid, $name, $followers]) {
+    $add->execute([$id, $uid, $name, 'pending']);
+    if ($followers !== null) {
+        $stat->execute([$uid, $followers]);
+    }
+}
+$order = [];
+while (($next = Review::next()['account']) !== null) {
+    $order[] = $next['username'];
+    Review::decide((int) $next['id'], 'valid', 'alice');
+}
+check('order', $order, ['big', 'big_tie', 'medium', 'small', 'zero', 'unenriched']);
+$undoRow = Db::one('SELECT review_token FROM ig_accounts WHERE id = 21');
+check('undo brings the top account back first',
+    Review::undo(21, (string) $undoRow['review_token'], 'alice')['changed'] && (int) Review::next()['account']['id'] === 21, true);
+
 echo "input validation\n";
 foreach ([[0, 'valid'], [2, 'maybe'], [2, '']] as [$id, $decision]) {
     try { Review::decide($id, $decision, 'alice'); check("decide($id, '$decision') throws", 'no exception', 'exception'); }

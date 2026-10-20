@@ -181,7 +181,7 @@ the rest are admin only. See
 | `?action=bio-search&q=chronic&n=25` | Search enriched bios |
 | `?action=raw&run=N&n=2[&clean=0]` | Raw dataset items, unmapped. `clean=0` shows hidden fields |
 | `?action=probe&actor=X&input=<json>&wait=90` | Run any actor with any input, return its raw output |
-| `?action=review-next` | Next account for review.php (pending, not yet reviewed, lowest id) and how many are left |
+| `?action=review-next` | Next account for review.php (pending, not yet reviewed, most followers first) and how many are left |
 | `POST ?action=review-decide` `{id, decision}` | `valid` or `skip` one account. First decision wins; returns a token for undo |
 | `POST ?action=review-undo` `{id, token}` | Undo that one decision, only if the row is unchanged since |
 | `POST ?action=review-photo-fetch` `{id}` | Fetch and save a pending account's profile photo through HikerAPI ($0.001), unless already saved |
@@ -214,11 +214,13 @@ SELECT a.username, s.followers_count, s.posts_count
   JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
  WHERE a.follow_status = 'pending'
    AND s.followers_count >= 50
- ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id
+ ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END,
+          s.followers_count DESC, a.id
  LIMIT 1;
 ```
 
-Accounts marked VALID on the review screen go first; see [the review screen](#the-review-screen-added-2026-10-16).
+Accounts marked VALID on the review screen go first, and within each group the most followers go
+first; see [the review screen](#the-review-screen-added-2026-10-16).
 
 The INNER JOIN means only enriched accounts qualify, because an unenriched account has no follower
 count. As of 2026-09-17 that is **2,130 of 10,857**. Enrichment coverage now limits how long the
@@ -573,10 +575,11 @@ touches the profile fields and `last_seen_at`.
 columns, which takes it off the review screen. **SKIP** writes `skipped` with the note
 `skipped in review`, the same as the accounts browser's "Do not follow", so "Revert to pending"
 undoes it. The follow script follows VALID accounts **first** (they still have to pass its
-`--min-followers` filter), then carries on with unreviewed pending accounts in id order, so it does
-not wait for review.
+`--min-followers` filter), then carries on with unreviewed pending accounts, so it does not wait for
+review. In both groups the account with the most followers goes first (2026-10-20).
 
-The review queue is `pending` with `reviewed_at` NULL, lowest id first. Both decisions apply only to a row that is still pending and unreviewed, so with two reviewers
+The review queue is `pending` with `reviewed_at` NULL, most followers first, accounts with no
+follower count last (`Review::ORDER`). Both decisions apply only to a row that is still pending and unreviewed, so with two reviewers
 the first one wins. A bulk skip or revert in the accounts browser clears all four review columns, so
 a reverted row comes back to the review screen and an old undo cannot touch it. The columns are added
 by `?action=migrate`, or on first use of the accounts browser or review screen.

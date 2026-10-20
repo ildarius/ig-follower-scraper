@@ -22,8 +22,9 @@ declare(strict_types=1);
  *   review_token     random, returned to the page so it can undo that one
  *                    decision and nothing else
  *
- * The review queue is pending rows with reviewed_at NULL, lowest id first,
- * which is the order the follow script works in, so review stays ahead of it.
+ * The review queue is pending rows with reviewed_at NULL, most followers
+ * first (ORDER). The follow script takes VALID accounts first, also most
+ * followers first, and only then unreviewed ones in the same order.
  *
  * Every write is a single guarded UPDATE. A decision applies only to a row
  * that is still pending and unreviewed, so with two reviewers on the same card
@@ -35,6 +36,13 @@ declare(strict_types=1);
 final class Review
 {
     public const REVIEW_SKIP_NOTE = 'skipped in review';
+
+    /**
+     * Review order: most followers first, accounts with no follower count
+     * (not enriched) last, then id. CASE rather than sorting on IS NULL so the
+     * same SQL runs in the SQLite tests.
+     */
+    public const ORDER = 'CASE WHEN s.followers_count IS NULL THEN 1 ELSE 0 END, s.followers_count DESC, a.id ASC';
 
     private static bool $schemaChecked = false;
 
@@ -101,7 +109,7 @@ final class Review
                FROM ig_accounts a
                LEFT JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
               WHERE a.follow_status = 'pending' AND a.reviewed_at IS NULL
-              ORDER BY a.id ASC
+              ORDER BY " . self::ORDER . "
               LIMIT 1"
         );
 

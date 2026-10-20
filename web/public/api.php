@@ -445,14 +445,15 @@ try {
                     "SELECT MIN(id) FROM ig_accounts WHERE follow_status = 'pending'"
                 ),
                 // The follow script's next target under its default filter
-                // (50 followers, no --only). Review-screen VALID accounts go
-                // first, as in the script's queue order.
+                // (50 followers, no --only), in its queue order: review-screen
+                // VALID accounts first, then most followers first.
                 'first_eligible' => Db::one(
                     "SELECT a.id, a.username, s.followers_count, a.review_decision
                        FROM ig_accounts a
                        JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
                       WHERE a.follow_status = :st AND s.followers_count >= 50 AND s.posts_count >= 0
-                      ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id
+                      ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END,
+                               s.followers_count DESC, a.id
                       LIMIT 1",
                     ['st' => 'pending']
                 ),

@@ -576,10 +576,10 @@ async function withDbRetry(label, fn) {
  * --only bypasses both filters, so a named account can always be tested.
  *
  * Accounts marked VALID on the web app's review screen (review_decision =
- * 'valid') go first, lowest id first, and only then the rest of the queue in id
- * order. Added 2026-10-16. VALID only reorders: it does not bypass the filters.
- * It also keeps this script off the account the reviewer is looking at, since
- * the review screen starts at the lowest unreviewed id.
+ * 'valid') go first, then the rest of the queue; within each group the account
+ * with the most followers goes first (2026-10-20; before that, lowest id).
+ * VALID only reorders: it does not bypass the filters. While VALID accounts are
+ * waiting this script stays off the card the reviewer is on.
  */
 // A dry run writes nothing back, so without this every pick would return the
 // same first pending row. If that account already shows "Following", no
@@ -593,9 +593,12 @@ function dryRunExclusion() {
   return { sql: ' AND a.id NOT IN (?)', params: [[...dryRunSeen]] };
 }
 
-// Queue order: review-screen VALID accounts first, then everything else by id.
-// NULL and 'skip' both fall into the second group.
-const VALIDATED_FIRST = `CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id`;
+// Queue order: review-screen VALID accounts first, then everything else; within
+// each group most followers first, accounts with no follower count last, then
+// id. NULL and 'skip' review decisions both fall into the second group.
+const QUEUE_ORDER = `CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END,
+          CASE WHEN s.followers_count IS NULL THEN 1 ELSE 0 END,
+          s.followers_count DESC, a.id`;
 
 async function nextTargetOnce() {
   const conn = await db();
@@ -623,7 +626,7 @@ async function nextTargetOnce() {
         WHERE a.follow_status = 'pending'
           AND s.followers_count >= ?
           AND s.posts_count >= ?${ex.sql}
-        ORDER BY ${VALIDATED_FIRST}
+        ORDER BY ${QUEUE_ORDER}
         LIMIT 1`,
       [MIN_FOLLOWERS, MIN_POSTS, ...ex.params]
     );
@@ -637,7 +640,7 @@ async function nextTargetOnce() {
        LEFT JOIN ig_profile_stats s ON s.ig_user_id = a.ig_user_id
       WHERE a.follow_status = 'pending'
         AND (s.id IS NULL OR s.posts_count >= ?)${ex.sql}
-      ORDER BY ${VALIDATED_FIRST}
+      ORDER BY ${QUEUE_ORDER}
       LIMIT 1`,
     [MIN_POSTS, ...ex.params]
   );

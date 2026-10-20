@@ -244,8 +244,7 @@ Columns this script touches:
 Rules:
 
 - The script selects `WHERE follow_status = 'pending'`, accounts marked VALID on the web app's
-  review screen first, then by id, so a rerun resumes where the last run stopped and never
-  re-follows an account.
+  review screen first, each group most followers first, so it never re-follows an account.
 - Each attempt is a single `UPDATE` inside its own transaction. A crash loses at most the one attempt
   in flight.
 - A profile that already shows "Following" is marked `already_following` and does not consume the
@@ -287,12 +286,15 @@ SELECT a.username, s.followers_count, s.posts_count
  WHERE a.follow_status = 'pending'
    AND s.followers_count >= 50
    AND s.posts_count >= 0
- ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END, a.id
+ ORDER BY CASE WHEN a.review_decision = 'valid' THEN 0 ELSE 1 END,
+          s.followers_count DESC, a.id
  LIMIT 1;
 ```
 
 **Validated accounts go first (2026-10-16).** Accounts marked VALID on the web app's review screen
-(`review_decision = 'valid'`) are picked before everything else, lowest id first. VALID only
+(`review_decision = 'valid'`) are picked before everything else. Within both groups the account
+with the most followers goes first (since 2026-10-20; before that, lowest id), and accounts with no
+follower count (only possible with `--min-followers 0`) go last. VALID only
 reorders: those accounts must still pass `--min-followers` and `--min-posts`. `--only` is unchanged.
 Before clicking Follow the script re-reads the account's status and leaves it alone if someone
 skipped it on the review screen in the meantime; results are written only to rows still `pending`.
