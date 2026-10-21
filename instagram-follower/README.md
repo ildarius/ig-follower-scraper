@@ -11,17 +11,19 @@ to start anywhere else.
 ```powershell
 cd "C:\Users\ildar\Claude\All projects\Sunny Kratom\ig-follower-scraper\instagram-follower"
 node instagram-follower.js --check-db
-node instagram-follower.js --follows 25
+node instagram-follower.js --follows 25 --cooldown-min 300 --cooldown-max 480
 ```
 
 `--check-db` confirms the script reaches the VPS database (`bizousoft_ig_analytics` on
 `66-206-23-226.boulat.net`) and prints the queue counts. It opens no browser. The second command is
 the follow run, in a visible Chrome window.
 
-Leave out `--cooldown-min` and `--cooldown-max` on daily runs. The default wait between follows is a
-random 3 to 5 minutes, about 15 follows an hour, with a 2 to 4 action warm-up before the first
-follow. 25 follows take about 1.3 to 2.1 hours (24 waits of 3 to 5 minutes, plus about 6 minutes
-for the follows and the warm-up); 100 take about 6.5 to 7.5 hours.
+Always add `--cooldown-min 300 --cooldown-max 480`. They set the wait between follows to a random 5
+to 8 minutes, which has run more reliably than the script's built-in 3 to 5 minutes (changed
+2026-10-20). That is about 9 follows an hour, with a 2 to 4 action warm-up before the first follow.
+25 follows take about 2.1 to 3.3 hours (24 waits of 5 to 8 minutes, plus about 6 minutes for the
+follows and the warm-up); 50 take about 4.2 to 6.7 hours; 100 take about 8.6 to 13.5 hours. Both
+values are seconds, and the minimum must stay below the maximum.
 
 ### Follows per day while ramping up
 
@@ -30,15 +32,15 @@ found are passed over without counting.
 
 | Day | Date | Command |
 |---|---|---|
-| 1 | 2026-10-14 | `node instagram-follower.js --follows 25` |
-| 2 | 2026-10-15 | `node instagram-follower.js --follows 35` |
-| 3 | 2026-10-16 | `node instagram-follower.js --follows 45` |
-| 4 | 2026-10-17 | `node instagram-follower.js --follows 55` |
-| 5 | 2026-10-18 | `node instagram-follower.js --follows 65` |
-| 6 | 2026-10-19 | `node instagram-follower.js --follows 75` |
-| 7 | 2026-10-20 | `node instagram-follower.js --follows 85` |
-| 8 | 2026-10-21 | `node instagram-follower.js --follows 95` |
-| 9 onward | 2026-10-22 | `node instagram-follower.js --follows 100` |
+| 1 | 2026-10-14 | `node instagram-follower.js --follows 25 --cooldown-min 300 --cooldown-max 480` |
+| 2 | 2026-10-15 | `node instagram-follower.js --follows 35 --cooldown-min 300 --cooldown-max 480` |
+| 3 | 2026-10-16 | `node instagram-follower.js --follows 45 --cooldown-min 300 --cooldown-max 480` |
+| 4 | 2026-10-17 | `node instagram-follower.js --follows 55 --cooldown-min 300 --cooldown-max 480` |
+| 5 | 2026-10-18 | `node instagram-follower.js --follows 65 --cooldown-min 300 --cooldown-max 480` |
+| 6 | 2026-10-19 | `node instagram-follower.js --follows 75 --cooldown-min 300 --cooldown-max 480` |
+| 7 | 2026-10-20 | `node instagram-follower.js --follows 85 --cooldown-min 300 --cooldown-max 480` |
+| 8 | 2026-10-21 | `node instagram-follower.js --follows 95 --cooldown-min 300 --cooldown-max 480` |
+| 9 onward | 2026-10-22 | `node instagram-follower.js --follows 100 --cooldown-min 300 --cooldown-max 480` |
 
 The ramp follows "Rate limit risk at 100 follows per day" below: start at 20 to 30, add about 10 a day. If a day is skipped, continue
 from the last number run rather than from the date. One run a day.
@@ -563,7 +565,7 @@ server.
 | `--min-followers N` | **Default 50.** Only follow accounts with at least N followers. Requires enrichment data, so this restricts the queue to accounts in `ig_profile_stats`. `--min-followers 0` disables it and lets unenriched accounts back in. |
 | `--min-posts N` | Also require at least N posts. Default 0, no filter. |
 | `--only user1,user2` | Process only the named usernames. |
-| `--cooldown-min` / `--cooldown-max` | Seconds between follow attempts. Default 180 and 300. |
+| `--cooldown-min` / `--cooldown-max` | Seconds between follow attempts. Default 180 and 300; the quickstart uses 300 and 480. |
 | `--headless` | Headless. Off by default, and Instagram treats headless sessions more aggressively. Debugging only. |
 | `--pause-on-fail` | Leave the browser open on a fatal error instead of exiting. |
 | `--no-launch` | Do not start Chrome, attach to one already on port 9222. |
