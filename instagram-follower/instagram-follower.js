@@ -74,10 +74,19 @@ const DEFAULT_CHROME_PROFILE = 'C:\\chrome-automation-profile';
 const COOLDOWN_MIN_S = 180;
 const COOLDOWN_MAX_S = 300;
 
-// Filler activity budgets, per hour.
+// Filler activity budgets, per hour. Overridden by --likes-per-hour,
+// --stories-per-hour and --reads-per-hour (N or N-M, 0 to 60).
 const LIKES_PER_HOUR = [5, 10];
 const STORIES_PER_HOUR = [5, 15];
 const READS_PER_HOUR = [3, 6];
+// One story session opens a ring in the home tray and watches this many story
+// frames before Escape. --stories-per-session N or N-M, 1 to 20.
+const STORIES_PER_SESSION = [1, 3];
+// Seconds between scripted advances inside a story session. Without
+// --story-seconds the first frame gets 2.5 to 5 s and the rest 2.5 to 6 s.
+// Instagram also advances by itself, so this is time between ArrowRight
+// presses, not a guaranteed time on one frame. --story-seconds N or N-M, 1 to 60.
+const HOURLY_BOUNDS = { min: 0, max: 60 };
 
 // Profile likes (added 2026-10-15, see profile-likes-progress.md): open a
 // random account we follow and like one of its recent posts or reels.
@@ -175,6 +184,16 @@ const NO_PROFILE_LIKES = has('--no-profile-likes');
 // Test mode: one profile visit (and like, unless --dry-run), then stop. No follows.
 const PROFILE_LIKE_ONCE = has('--profile-like-once');
 const PROFILE_LIKES_RANGE = parseRange(val('--profile-likes-per-hour', ''), PROFILE_LIKES_PER_HOUR, '--profile-likes-per-hour');
+// Filler budgets and story pacing (2026-10-21). The likes range still sits
+// under TOTAL_LIKES_PER_HOUR_MAX, feed and profile likes together.
+const LIKES_RANGE = parseRange(val('--likes-per-hour', ''), LIKES_PER_HOUR, '--likes-per-hour', HOURLY_BOUNDS);
+const STORIES_RANGE = parseRange(val('--stories-per-hour', ''), STORIES_PER_HOUR, '--stories-per-hour', HOURLY_BOUNDS);
+const READS_RANGE = parseRange(val('--reads-per-hour', ''), READS_PER_HOUR, '--reads-per-hour', HOURLY_BOUNDS);
+const STORY_SESSION_RANGE = parseRange(val('--stories-per-session', ''), STORIES_PER_SESSION, '--stories-per-session', { min: 1, max: 20 });
+// null = the built-in pacing described above.
+const STORY_SECONDS_RANGE = has('--story-seconds')
+  ? parseRange(val('--story-seconds', ''), null, '--story-seconds', { min: 1, max: 60 })
+  : null;
 const MAX_MINUTES = parseInt(val('--max-minutes', '0'), 10);
 const ONLY = val('--only', '');
 const CDP_URL = val('--cdp', DEFAULT_CDP);
@@ -936,23 +955,29 @@ async function watchStories(page) {
   } else if (await any.count() > 0) {
     target = any.first();
   }
-  if (!target) { log('STORY', 'no stories in the tray'); return; }
+  if (!target) { log('STORY', 'no stories in the tray'); return { opened: false, watched: 0 }; }
 
   const who = (await target.innerText().catch(() => '')).split('\n')[0] || 'someone';
+  // Time on a frame before the next scripted advance; see STORY_SECONDS_RANGE.
+  const dwell = (first) => STORY_SECONDS_RANGE
+    ? rand(STORY_SECONDS_RANGE[0] * 1000, STORY_SECONDS_RANGE[1] * 1000)
+    : rand(2500, first ? 5000 : 6000);
   await target.click();
-  await sleep(rand(2500, 5000));
+  await sleep(dwell(true));
 
-  const watch = randInt(1, 3);
+  const watch = randInt(STORY_SESSION_RANGE[0], STORY_SESSION_RANGE[1]);
   for (let i = 1; i < watch; i++) {
-    // Right arrow advances. Never click the story Like: that DMs the author.
+    // Right arrow advances, into the next account's stories at the end of
+    // one. Never click the story Like: that DMs the author.
     await page.keyboard.press('ArrowRight').catch(() => {});
-    await sleep(rand(2500, 6000));
+    await sleep(dwell(false));
   }
 
   await page.keyboard.press('Escape').catch(() => {});
   await sleep(rand(1000, 2000));
-  log('STORY', `watched ~${watch} from @${who}`);
+  log('STORY', `watched ~${watch} starting with @${who}`);
   jlog({ action: 'story', user: who, count: watch });
+  return { opened: true, watched: watch };
 }
 
 /** Scroll the home feed in uneven increments, sometimes back up. */
@@ -1390,9 +1415,19 @@ async function checkSignedIn(page) {
 // section 6 of instagram-selectors-notes.md. Nothing in this section touches the
 // browser or the database, so tests/profile-likes-test.js loads it directly.
 
-/** "2" or "1-2" into [min, max]. Empty text gives the default. Exits on bad input. */
-function parseRange(text, dflt, flagName) {
-  if (text === undefined || text === null || String(text).trim() === '') return dflt.slice();
+/**
+ * "2" or "1-2" into [min, max]. Empty text gives the default; with a null
+ * default the value is required. Exits on bad input, and on a value outside
+ * bounds {min, max} when bounds are given.
+ */
+function parseRange(text, dflt, flagName, bounds) {
+  if (text === undefined || text === null || String(text).trim() === '') {
+    if (dflt === null) {
+      console.error(`\nERROR: ${flagName} needs a number or a range such as 5-12.\n`);
+      process.exit(1);
+    }
+    return dflt.slice();
+  }
   const m = /^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$/.exec(String(text));
   if (!m) {
     console.error(`\nERROR: ${flagName} must be a number or a range such as 1-2, not "${text}".\n`);
@@ -1400,7 +1435,36 @@ function parseRange(text, dflt, flagName) {
   }
   const a = parseInt(m[1], 10);
   const b = m[2] !== undefined ? parseInt(m[2], 10) : a;
-  return a <= b ? [a, b] : [b, a];
+  const range = a <= b ? [a, b] : [b, a];
+  if (bounds && (range[0] < bounds.min || range[1] > bounds.max)) {
+    console.error(`\nERROR: ${flagName} must be between ${bounds.min} and ${bounds.max}, not "${text}".\n`);
+    process.exit(1);
+  }
+  return range;
+}
+
+/**
+ * What the cooldown loop may pick from, with its weights: scroll twice, every
+ * other action once and only while its budget lasts. likeOk and plikeOk carry
+ * the checks that live outside the budget (the hourly likes total, the profile
+ * like gate).
+ */
+function fillerOptions(budget, likeOk, plikeOk) {
+  const options = [];
+  if (budget.likes > 0 && likeOk) options.push('like');
+  if (plikeOk) options.push('plike');
+  if (budget.stories > 0) options.push('story');
+  if (budget.reads > 0) options.push('read');
+  options.push('scroll', 'scroll');      // scrolling is always plausible
+  return options;
+}
+
+/** Warm-up choices: scroll twice, a story and a like once each if budgeted. */
+function warmupOptions(budget) {
+  const options = ['scroll', 'scroll'];
+  if (budget.stories > 0) options.push('story');
+  if (budget.likes > 0) options.push('like');
+  return options;
 }
 
 /** The <code> of /<user>/p/<code>/, /<user>/reel/<code>/ or /p/<code>/, or null. */
@@ -1952,6 +2016,10 @@ async function main() {
   if (eligible !== null) console.log(`Eligible:  ${eligible} accounts match right now`);
   if (MAX_MINUTES > 0) console.log(`Stop after ${MAX_MINUTES} minutes, whichever comes first`);
   console.log(`Warm-up:   ${NO_WARMUP ? 'disabled (--no-warmup)' : '2 to 4 browsing actions before the first follow'}`);
+  console.log(`Stories:   up to ${STORIES_RANGE[0]}-${STORIES_RANGE[1]} sessions/hour, ` +
+              `${STORY_SESSION_RANGE[0]}-${STORY_SESSION_RANGE[1]} per session, ` +
+              (STORY_SECONDS_RANGE ? `${STORY_SECONDS_RANGE[0]}-${STORY_SECONDS_RANGE[1]} s each` : '2.5-6 s each'));
+  console.log(`Fillers:   up to ${LIKES_RANGE[0]}-${LIKES_RANGE[1]} likes and ${READS_RANGE[0]}-${READS_RANGE[1]} comment reads per hour`);
   // Profile likes need the tables the web app's migrate action creates.
   // Checked even with --no-profile-likes: feed likes and new follows record into
   // the same tables.
@@ -2001,9 +2069,9 @@ async function main() {
   let stopReason = 'target reached';
 
   const budget = {
-    likes: randInt(LIKES_PER_HOUR[0], LIKES_PER_HOUR[1]),
-    stories: randInt(STORIES_PER_HOUR[0], STORIES_PER_HOUR[1]),
-    reads: randInt(READS_PER_HOUR[0], READS_PER_HOUR[1]),
+    likes: randInt(LIKES_RANGE[0], LIKES_RANGE[1]),
+    stories: randInt(STORIES_RANGE[0], STORIES_RANGE[1]),
+    reads: randInt(READS_RANGE[0], READS_RANGE[1]),
   };
   let budgetResetAt = Date.now() + 3600 * 1000;
 
@@ -2033,9 +2101,11 @@ async function main() {
       const steps = randInt(2, 4);
       log('INFO', `warming up with ${steps} actions before the first follow`);
       for (let i = 0; i < steps; i++) {
-        const opener = pick(['scroll', 'scroll', 'story', 'like']);
+        const opener = pick(warmupOptions(budget));
         try {
-          if (opener === 'story') { await watchStories(page); stories++; budget.stories--; }
+          // A story attempt uses budget even on an empty tray, so an empty
+          // tray cannot be retried every cycle; only an opened ring counts.
+          if (opener === 'story') { budget.stories--; if ((await watchStories(page)).opened) stories++; }
           else if (opener === 'like') {
             budget.likes--;
             if (await likePost(page)) { likes++; totalLikesHour++; }
@@ -2056,9 +2126,9 @@ async function main() {
       }
 
       if (Date.now() > budgetResetAt) {
-        budget.likes = randInt(LIKES_PER_HOUR[0], LIKES_PER_HOUR[1]);
-        budget.stories = randInt(STORIES_PER_HOUR[0], STORIES_PER_HOUR[1]);
-        budget.reads = randInt(READS_PER_HOUR[0], READS_PER_HOUR[1]);
+        budget.likes = randInt(LIKES_RANGE[0], LIKES_RANGE[1]);
+        budget.stories = randInt(STORIES_RANGE[0], STORIES_RANGE[1]);
+        budget.reads = randInt(READS_RANGE[0], READS_RANGE[1]);
         plike.budget = randInt(PROFILE_LIKES_RANGE[0], PROFILE_LIKES_RANGE[1]);
         plike.thisHour = 0;
         totalLikesHour = 0;
@@ -2081,12 +2151,9 @@ async function main() {
       }
 
       // Cooldown: do something a person would be doing.
-      const options = [];
-      if (budget.likes > 0 && totalLikesHour < TOTAL_LIKES_PER_HOUR_MAX) options.push('like');
-      if (profileLikeGate(plike, totalLikesHour, Date.now(), plikeLimits).ok) options.push('plike');
-      if (budget.stories > 0) options.push('story');
-      if (budget.reads > 0) options.push('read');
-      options.push('scroll', 'scroll');      // scrolling is always plausible
+      const options = fillerOptions(budget,
+        totalLikesHour < TOTAL_LIKES_PER_HOUR_MAX,
+        profileLikeGate(plike, totalLikesHour, Date.now(), plikeLimits).ok);
 
       const action = pick(options);
       try {
@@ -2104,7 +2171,7 @@ async function main() {
             log('WARN', 'profile likes turned off for the rest of this run, a like did not register');
           }
         }
-        else if (action === 'story') { await watchStories(page); budget.stories--; stories++; }
+        else if (action === 'story') { budget.stories--; if ((await watchStories(page)).opened) stories++; }
         else if (action === 'read') { await readComments(page); budget.reads--; reads++; }
         else { await scrollFeed(page); }
       } catch (e) {

@@ -11,7 +11,7 @@ to start anywhere else.
 ```powershell
 cd "C:\Users\ildar\Claude\All projects\Sunny Kratom\ig-follower-scraper\instagram-follower"
 node instagram-follower.js --check-db
-node instagram-follower.js --follows 25 --cooldown-min 300 --cooldown-max 480
+node instagram-follower.js --follows 25 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12
 ```
 
 `--check-db` confirms the script reaches the VPS database (`bizousoft_ig_analytics` on
@@ -25,6 +25,16 @@ to 8 minutes, which has run more reliably than the script's built-in 3 to 5 minu
 follows and the warm-up); 50 take about 4.2 to 6.7 hours; 100 take about 8.6 to 13.5 hours. Both
 values are seconds, and the minimum must stay below the maximum.
 
+Also add `--stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` (2026-10-21), so the
+longer waits are spent watching stories in the home tray: up to 15 to 25 story sessions an hour,
+3 to 6 stories each, 5 to 12 seconds per story. That is at most about 4 to 30 minutes of stories an
+hour; the hourly number is a ceiling the run works towards, not a promise, because each filler
+action is picked at random. These are brief views: Instagram moves to the next story by itself, so
+the seconds are the time between the script's own advances. The right arrow can roll on into the
+next account's stories, and the tray is mostly, but not guaranteed to be, accounts we follow. Watching
+stories is passive but still shows up as views from the account; nothing here guarantees a safe
+number.
+
 ### Follows per day while ramping up
 
 `--follows N` counts only real Follow clicks. Accounts already followed, already requested, or not
@@ -32,15 +42,15 @@ found are passed over without counting.
 
 | Day | Date | Command |
 |---|---|---|
-| 1 | 2026-10-14 | `node instagram-follower.js --follows 25 --cooldown-min 300 --cooldown-max 480` |
-| 2 | 2026-10-15 | `node instagram-follower.js --follows 35 --cooldown-min 300 --cooldown-max 480` |
-| 3 | 2026-10-16 | `node instagram-follower.js --follows 45 --cooldown-min 300 --cooldown-max 480` |
-| 4 | 2026-10-17 | `node instagram-follower.js --follows 55 --cooldown-min 300 --cooldown-max 480` |
-| 5 | 2026-10-18 | `node instagram-follower.js --follows 65 --cooldown-min 300 --cooldown-max 480` |
-| 6 | 2026-10-19 | `node instagram-follower.js --follows 75 --cooldown-min 300 --cooldown-max 480` |
-| 7 | 2026-10-20 | `node instagram-follower.js --follows 85 --cooldown-min 300 --cooldown-max 480` |
-| 8 | 2026-10-21 | `node instagram-follower.js --follows 95 --cooldown-min 300 --cooldown-max 480` |
-| 9 onward | 2026-10-22 | `node instagram-follower.js --follows 100 --cooldown-min 300 --cooldown-max 480` |
+| 1 | 2026-10-14 | `node instagram-follower.js --follows 25 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 2 | 2026-10-15 | `node instagram-follower.js --follows 35 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 3 | 2026-10-16 | `node instagram-follower.js --follows 45 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 4 | 2026-10-17 | `node instagram-follower.js --follows 55 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 5 | 2026-10-18 | `node instagram-follower.js --follows 65 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 6 | 2026-10-19 | `node instagram-follower.js --follows 75 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 7 | 2026-10-20 | `node instagram-follower.js --follows 85 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 8 | 2026-10-21 | `node instagram-follower.js --follows 95 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
+| 9 onward | 2026-10-22 | `node instagram-follower.js --follows 100 --cooldown-min 300 --cooldown-max 480 --stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` |
 
 The ramp follows "Rate limit risk at 100 follows per day" below: start at 20 to 30, add about 10 a day. If a day is skipped, continue
 from the last number run rather than from the date. One run a day.
@@ -135,7 +145,7 @@ runs on its cooldown and the profile like on its own pacing; the other four fill
 
 | # | Action | What it does |
 |---|---|---|
-| 1 | Watch stories | Opens the story tray on the home feed, watches 1 to 3 stories from followed accounts, advances with the right arrow, exits with Escape. |
+| 1 | Watch stories | Opens the first unseen ring in the story tray on the home feed, watches 1 to 3 stories (`--stories-per-session`), advancing with the right arrow every 2.5 to 6 s (`--story-seconds`), exits with Escape. An empty tray uses up the attempt but is not counted as watched. |
 | 2 | Scroll the feed | Scrolls the home feed in variable increments with variable pauses, sometimes scrolling back up. |
 | 3 | Like a post | Picks a random post currently in the feed viewport, reads the like button's `aria-label`, and clicks only if it reads "Like" rather than "Unlike". Already-liked posts are skipped, never toggled off. |
 | 4 | Read comments | Opens a profile from the feed, opens one of its posts, scrolls the comment list, closes the post, returns to the feed. No comment text is stored. This is dwell time only. |
@@ -153,7 +163,7 @@ failed follow starts the same cooldown as a successful one.
 | Follow cooldown | 180 to 300 s, uniform random | `--cooldown-min` / `--cooldown-max` |
 | Follows per run | 100 | `--follows` |
 | Likes | 5 to 10 per hour | `--likes-per-hour` |
-| Stories | 5 to 15 per hour | `--stories-per-hour` |
+| Story sessions | 5 to 15 per hour, 1 to 3 stories each, 2.5 to 6 s apart | `--stories-per-hour`, `--stories-per-session`, `--story-seconds` |
 | Comment reads | 3 to 6 per hour | `--reads-per-hour` |
 | Profile likes | 1 to 2 per hour, at least 20 min apart, at most 15 per run | `--profile-likes-per-hour`, `--no-profile-likes` |
 | All likes together | at most 10 per hour (feed and profile) | none, `TOTAL_LIKES_PER_HOUR_MAX` in the script |
@@ -573,6 +583,11 @@ server.
 | `--cdp` / `--chrome-profile` | Override the CDP endpoint or the profile directory. |
 | `--replay-journal` | Apply `pending-writes.jsonl` to the database, then exit. Opens no browser. |
 | `--check-db` | Open the tunnel, check the server is the VPS, print its hostname, the queue counts and the eligible count, the following-list figures and the profile-likes figures (accounts due, requests due, posts liked), then exit. Opens no browser and writes nothing. |
+| `--likes-per-hour N` or `N-M` | Feed likes per hour, 0 to 60. Default `5-10`. The 10-likes-an-hour total (feed and profile) still applies. Added to the script 2026-10-21; it was documented before but not read. |
+| `--stories-per-hour N` or `N-M` | Story sessions per hour, 0 to 60. Default `5-15`. 0 also keeps stories out of the warm-up. A ceiling, not a target that is always reached. |
+| `--stories-per-session N` or `N-M` | Stories watched in one session before Escape, 1 to 20. Default `1-3`. |
+| `--story-seconds N` or `N-M` | Seconds between the script's advances inside a session, 1 to 60. Without it: 2.5 to 5 s on the first story, 2.5 to 6 s after. Instagram also advances by itself. |
+| `--reads-per-hour N` or `N-M` | Comment reads per hour, 0 to 60. Default `3-6`. |
 | `--profile-likes-per-hour N` or `N-M` | Profile likes per hour, drawn afresh each hour. Default `1-2`. The 20-minute gap, the 15-per-run maximum and the 10-likes-an-hour total still apply. |
 | `--no-profile-likes` | Leave profile likes out of this run. Feed likes and follows are still recorded in `ig_post_likes` and `ig_own_following`. |
 | `--profile-like-once` | Test mode: one profile visit (and one like, unless `--dry-run`), then exit. No follows. Exit code 1 if the like did not register, 2 on an action block. |

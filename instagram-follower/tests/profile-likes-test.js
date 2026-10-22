@@ -51,7 +51,7 @@ let exitCode = null;
 const fakeProcess = { exit: (c) => { exitCode = c; throw new Error('exit'); } };
 const quietConsole = { error: () => {}, log: () => {} };
 const pure = new Function('process', 'console',
-  PURE + '\nreturn { parseRange, postCodeFromHref, visitDecision, profileLikeGate, shuffled };')(fakeProcess, quietConsole);
+  PURE + '\nreturn { parseRange, postCodeFromHref, visitDecision, profileLikeGate, shuffled, fillerOptions, warmupOptions };')(fakeProcess, quietConsole);
 
 console.log('\nparseRange');
 {
@@ -69,6 +69,52 @@ console.log('\nparseRange');
     try { pure.parseRange(bad, d, '--x'); } catch (_) {}
     check(`"${bad}" exits with code 1`, exitCode === 1);
   }
+}
+
+console.log('\nparseRange bounds');
+{
+  const d = [1, 3];
+  const b = { min: 1, max: 20 };
+  check('in range passes', pure.parseRange('3-6', d, '--x', b).join() === '3,6');
+  check('the bounds themselves pass', pure.parseRange('1-20', d, '--x', b).join() === '1,20');
+  check('empty text gives the default even with bounds', pure.parseRange('', d, '--x', b).join() === '1,3');
+  check('0 allowed when min is 0', pure.parseRange('0', d, '--x', { min: 0, max: 60 }).join() === '0,0');
+  for (const bad of ['0', '0-3', '21', '5-21']) {
+    exitCode = null;
+    try { pure.parseRange(bad, d, '--x', b); } catch (_) {}
+    check(`"${bad}" outside 1-20 exits with code 1`, exitCode === 1);
+  }
+  exitCode = null;
+  try { pure.parseRange('500', d, '--x'); } catch (_) {}
+  check('no bounds means no limit (profile likes unchanged)', exitCode === null);
+  for (const missing of ['', undefined, '  ']) {
+    exitCode = null;
+    try { pure.parseRange(missing, null, '--story-seconds', { min: 1, max: 60 }); } catch (_) {}
+    check(`required value missing (${JSON.stringify(missing)}) exits with code 1`, exitCode === 1);
+  }
+}
+
+console.log('\nfillerOptions');
+{
+  const f = pure.fillerOptions;
+  const full = { likes: 1, stories: 1, reads: 1 };
+  check('everything allowed, scroll weighted twice',
+    f(full, true, true).join() === 'like,plike,story,read,scroll,scroll');
+  check('no story budget drops story', !f({ ...full, stories: 0 }, true, true).includes('story'));
+  check('no like budget drops like', !f({ ...full, likes: 0 }, true, true).includes('like'));
+  check('no read budget drops read', !f({ ...full, reads: 0 }, true, true).includes('read'));
+  check('hourly likes total reached drops like', !f(full, false, true).includes('like'));
+  check('profile like only when its gate is open', !f(full, true, false).includes('plike'));
+  check('all budgets spent leaves scrolling only', f({ likes: 0, stories: 0, reads: 0 }, true, false).join() === 'scroll,scroll');
+}
+
+console.log('\nwarmupOptions');
+{
+  const w = pure.warmupOptions;
+  check('default warm-up weights', w({ likes: 1, stories: 1, reads: 0 }).join() === 'scroll,scroll,story,like');
+  check('--stories-per-hour 0 means no warm-up story', !w({ likes: 1, stories: 0 }).includes('story'));
+  check('--likes-per-hour 0 means no warm-up like', !w({ likes: 0, stories: 1 }).includes('like'));
+  check('both zero leaves scrolling only', w({ likes: 0, stories: 0 }).join() === 'scroll,scroll');
 }
 
 console.log('\npostCodeFromHref');
