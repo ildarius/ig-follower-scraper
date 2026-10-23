@@ -49,7 +49,13 @@ settings, 2026-10-22 10:23). Reviewed with Codex before building:
       remembering at click, no action-block check) each made it fail
 - [x] 8.1 README, 8.2 selectors notes section 2, 8.3 this file
 - [ ] 8.4 Master `CLAUDE.md` on the PC: not reachable from the VPS; update it there
-- [ ] 7 Live verification on the PC (selectors in the Playwright MCP, then three `--story-once` runs)
+- [x] 7 Live verification on the PC, 2026-10-22 20:23 to 20:25: `node tests\stories-test.js` 99 passed on
+      the PC; three `--story-once --no-warmup` runs exited 0 with three different accounts, all chosen
+      from the tray data (124 accounts). The Playwright MCP selector check was skipped: the runs used the
+      same selectors on the live page.
+- [ ] Not yet seen live: tray Next clicks (all three picks were rank 1 or 2), and more than one frame
+      from an account (each pick had 1 frame left or was partly watched). The first normal run will
+      show both in `run-log.jsonl` (`rank` above 6, `watched` above 1).
 
 Existing suites: `db-retry-test` passes. `profile-likes-test` passes, but its random 12-hour pacing
 check "at least 20 min between likes" failed once in six runs, with and without this change.
@@ -62,4 +68,8 @@ Budget for the build and its tests: 10 accounts (12 were used on 2026-10-22 by t
 
 | # | Account | When | How |
 |---|---|---|---|
-| | none yet | | |
+| 1 | emmyrobbindoula | 2026-10-22 20:23 | `--story-once`, rank 1 of 124, 1 of 10 frames. Most likely treated as partly watched (one frame only), because the investigation opened it at 17:40 |
+| 2 | alexa.covington | 2026-10-22 20:24 | `--story-once`, rank 2 of 124, 1 of 1 frames |
+| 3 | adailydoseofmelrose | 2026-10-22 20:25 | `--story-once`, rank 1 of 124 after the reload, 1 of 1 frames |
+
+3 of the 10 test views used.
