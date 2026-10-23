@@ -71,36 +71,84 @@ that walks generic buttons inside an article must account for it.
 
 ---
 
-## 2. Story tray - verified
+## 2. Story tray - verified 2026-10-22
 
-Story items are **not** links:
+Replaces the 2026-09-15 notes. Full evidence, screenshots and the questions behind it:
+`story-tray-findings.md` (sections 5 and 7). Viewport 1359 x 906, English UI.
+
+### The full list is in the page
+
+The tray is a virtualized list. The home page HTML carries every account with a story (130 on
+2026-10-22, all 130 followed accounts that had one) as JSON in one element:
+
+| Property | Value |
+|---|---|
+| Element | `script[type="application/json"]` whose text contains `xdt_api__v1__feed__reels_tray` |
+| Size | about 220,000 characters |
+| Path | `xdt_api__v1__feed__reels_tray.tray[]` |
+| Source | Relay preloader `PolarisStoriesV3TrayContainerQueryRelayPreloader`; it can change in any deploy |
+
+It comes with a full page load of `/` only. Escape from the viewer returns to `/` without a load, so
+reload before reading it again. Fields used: `user.username`; `ranked_position` (1-based tray order);
+`muted`; `seen` and `latest_reel_media` (unseen when `seen < latest_reel_media`, partly watched when
+`seen > 0`); `expiring_at`; `reel_type` (`user_reel`). `parseTrayJson()` in the script extracts it
+with a brace walk that skips JSON strings.
+
+### The tray DOM
 
 ```
-ul > li > div[role="button"]   innerText is the username
-          └ ... > canvas       89 x 89, the ring
+div                                                   wrapper, no attributes
+|- div[role="presentation"]                           the scroller, 630 x 124, overflow-x auto
+|   `- div > ul
+|       |- li[style="transform:translateX(<total>px);width:1px"]   spacer, FIRST child, no button
+|       |- li[style="transform:translateX(0px)"]                   rank 1
+|       |   `- div[role="button"][aria-label="Story by <username>, not seen"]
+|       |       |- ... canvas[width="89"][height="89"]               the ring
+|       |       `- span > span                                       text "<username>"
+|       |- li[style="transform:translateX(104px)"]                 rank 2
+|       `- ...                                                      12 to 18 rendered at a time
+`- button[aria-label="Next"]                          scrolls 416 px (4 rings); removed at the end
+   (button[aria-label="Go back"] appears on the left once scrolled)
 ```
 
-12 to 17 items present depending on tray scroll position.
+| Purpose | Selector or rule |
+|---|---|
+| Tray is ready | `div[role="presentation"] ul li canvas` |
+| Scroller | `div[role="presentation"]:has(ul li canvas)` |
+| Ring for one account | `` ul li div[role="button"][aria-label^="Story by ${username},"] `` |
+| Tray Next | `div:has(> div[role="presentation"] ul li canvas) > button[aria-label="Next"]`. Scoped because the page has two other `button[aria-label="Next"]` in feed carousels |
+| Ring position | `li` at `translateX((ranked_position - 1) * 104 px)`. Ranks 1 to 6 are on screen without scrolling |
+| Reaching rank r | `Math.ceil(Math.max(0, (r - 1) * 104 - 520) / 416)` Next clicks; rank 132 took 32 |
 
-**Seen state is readable from the DOM.** Once the story viewer has been opened, the tray buttons
-carry:
+**Labels are present on a fresh load**, before the viewer has been opened (the 2026-09-15 notes said
+otherwise; that is no longer true):
 
 ```
-aria-label="Story by <username>, seen"
 aria-label="Story by <username>, not seen"
+aria-label="Story by <username>, seen"        also used for MUTED accounts, whose data has seen: 0
 ```
 
-So "watch unseen stories only" is a DOM filter, not something the script has to track itself. The
-ring canvas does not need to be inspected.
+Use the data, not the label, to tell muted from watched. Labels are English UI text.
 
-Open the first story:
+### Story viewer
 
-```js
-page.locator('ul li div[role="button"]:has(canvas)').first().click()
-```
+| What | Detail |
+|---|---|
+| URL | `/stories/<username>/` on the first frame, `/stories/<username>/<storyId>/` afterwards. Parse with `/\/stories\/([^/?#]+)\//` |
+| Title | `Stories • Instagram`. There is no `[role="dialog"]` |
+| Current account | `a[href="/<username>/"]` with a non-zero box (header avatar, then the name) |
+| Frame count | from the header link walk up to the first ancestor at least 300 px tall (the frame column, 472 x 839). The progress bar is the first `div` in it that is 1 to 3 px tall with all children at most 3 px tall: one child per frame |
+| Where it opens | at the first unwatched frame, so for a partly watched account the frame count is not what is left |
+| Next frame | key ArrowRight. On an account's last frame it moves to the next account in tray order, often an ad |
+| Exit | key Escape; the URL returns to `https://www.instagram.com/` without a page load |
+| Expired since load | title `Page couldn't load • Instagram`, a `Reload page` button. Go back to `/` |
 
-Verified: opened `/stories/tippytop2020/`, then auto-advanced to
-`/stories/coryfuller2026/3986835644155831522/`.
+Leaving after a few frames keeps the ring `not seen`: `seen` only catches up when every frame has
+been watched.
+
+**The feed stays in the DOM under the viewer with 0 x 0 boxes**, including hidden
+`svg[aria-label="Like"]`. Never select a viewer icon by label alone. The script clicks nothing in
+the viewer: keys only.
 
 ### Story viewer controls
 
@@ -108,9 +156,8 @@ Read from `svg[aria-label]` inside the viewer: `Pause`, `Previous`, `Next`, `Clo
 `Direct`, `Menu`.
 
 **Do not click the story `Like`.** Liking a story sends a DM notification to the author, which is a
-different action from liking a feed post.
-
-**Escape exits the viewer.** Verified: URL returned from `/stories/...` to `https://www.instagram.com/`.
+different action from liking a feed post. Do not click `Menu`, `Direct`, a reply field or anything
+else either.
 
 ---
 

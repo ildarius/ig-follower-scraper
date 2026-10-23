@@ -14,7 +14,8 @@
  *
  * SELECTORS
  *   Every locator here was verified live on 2026-09-15. See
- *   instagram-selectors-notes.md. Three traps are handled explicitly:
+ *   instagram-selectors-notes.md. The story tray and viewer were re-verified on
+ *   2026-10-22; details in story-tray-findings.md. Three traps are handled explicitly:
  *     1. "Following" contains "Follow", so the button text is compared exactly.
  *     2. Profile grid links are /<user>/p/<code>/, not /p/<code>/.
  *     3. A post opened by click is a [role="dialog"]; one opened by URL is not.
@@ -79,14 +80,24 @@ const COOLDOWN_MAX_S = 300;
 const LIKES_PER_HOUR = [5, 10];
 const STORIES_PER_HOUR = [5, 15];
 const READS_PER_HOUR = [3, 6];
-// One story session opens a ring in the home tray and watches this many story
-// frames before Escape. --stories-per-session N or N-M, 1 to 20.
+// One story session opens one account's ring in the home tray and watches this
+// many of its frames before Escape, never more than the account has.
+// --stories-per-session N or N-M, 1 to 20.
 const STORIES_PER_SESSION = [1, 3];
-// Seconds between scripted advances inside a story session. Without
-// --story-seconds the first frame gets 2.5 to 5 s and the rest 2.5 to 6 s.
-// Instagram also advances by itself, so this is time between ArrowRight
-// presses, not a guaranteed time on one frame. --story-seconds N or N-M, 1 to 60.
+// Seconds on each frame before the next scripted advance or Escape. Without
+// --story-seconds it is 3 to 7 s. Instagram also advances by itself, so this is
+// time between key presses, not a guaranteed time on one frame.
+// --story-seconds N or N-M, 1 to 60.
 const HOURLY_BOUNDS = { min: 0, max: 60 };
+
+// Story account choice (rebuilt 2026-10-22, evidence in story-tray-findings.md).
+const STORY_RING_PITCH_PX = 104;        // li translateX step in the tray
+const STORY_TRAY_NEXT_PX = 416;         // one click of the tray Next button
+const STORY_VISIBLE_PX = 520;           // rings at translateX below this are on screen without scrolling
+const STORY_NEXT_CLICKS_MAX = 40;       // 132 accounts needed 32 clicks on 2026-10-22
+const STORY_MIN_LIFETIME_S = 300;       // skip a story that expires within 5 minutes
+const STORY_REMEMBER_MS = 24 * 3600 * 1000;
+const STORY_STATE_FILE = path.join(HERE, 'story-watched.json');
 
 // Profile likes (added 2026-10-15, see profile-likes-progress.md): open a
 // random account we follow and like one of its recent posts or reels.
@@ -183,6 +194,8 @@ const NO_WARMUP = has('--no-warmup');
 const NO_PROFILE_LIKES = has('--no-profile-likes');
 // Test mode: one profile visit (and like, unless --dry-run), then stop. No follows.
 const PROFILE_LIKE_ONCE = has('--profile-like-once');
+// Test mode: one watchStories() call, then stop. No follows, no warm-up.
+const STORY_ONCE = has('--story-once');
 const PROFILE_LIKES_RANGE = parseRange(val('--profile-likes-per-hour', ''), PROFILE_LIKES_PER_HOUR, '--profile-likes-per-hour');
 // Filler budgets and story pacing (2026-10-21). The likes range still sits
 // under TOTAL_LIKES_PER_HOUR_MAX, feed and profile likes together.
@@ -936,50 +949,6 @@ async function goHome(page) {
   }
 }
 
-/**
- * Watch 1 to 3 stories from the tray.
- *
- * Tray items are ul > li > div[role="button"] containing a canvas. Once the
- * viewer has been opened they carry aria-label="Story by <user>, seen|not seen",
- * so unseen ones can be preferred without tracking state here.
- */
-async function watchStories(page) {
-  await goHome(page);
-
-  const unseen = page.locator('li div[role="button"][aria-label*="not seen"]');
-  const any = page.locator('ul li div[role="button"]:has(canvas)');
-
-  let target = null;
-  if (await unseen.count() > 0) {
-    target = unseen.first();
-  } else if (await any.count() > 0) {
-    target = any.first();
-  }
-  if (!target) { log('STORY', 'no stories in the tray'); return { opened: false, watched: 0 }; }
-
-  const who = (await target.innerText().catch(() => '')).split('\n')[0] || 'someone';
-  // Time on a frame before the next scripted advance; see STORY_SECONDS_RANGE.
-  const dwell = (first) => STORY_SECONDS_RANGE
-    ? rand(STORY_SECONDS_RANGE[0] * 1000, STORY_SECONDS_RANGE[1] * 1000)
-    : rand(2500, first ? 5000 : 6000);
-  await target.click();
-  await sleep(dwell(true));
-
-  const watch = randInt(STORY_SESSION_RANGE[0], STORY_SESSION_RANGE[1]);
-  for (let i = 1; i < watch; i++) {
-    // Right arrow advances, into the next account's stories at the end of
-    // one. Never click the story Like: that DMs the author.
-    await page.keyboard.press('ArrowRight').catch(() => {});
-    await sleep(dwell(false));
-  }
-
-  await page.keyboard.press('Escape').catch(() => {});
-  await sleep(rand(1000, 2000));
-  log('STORY', `watched ~${watch} starting with @${who}`);
-  jlog({ action: 'story', user: who, count: watch });
-  return { opened: true, watched: watch };
-}
-
 /** Scroll the home feed in uneven increments, sometimes back up. */
 async function scrollFeed(page) {
   await goHome(page);
@@ -1309,6 +1278,398 @@ async function followNext(page) {
   }
 
   return { attempted: true };
+}
+
+// ----------------------------------------------------------- stories: pure helpers
+//
+// Rebuilt 2026-10-22. Evidence: story-tray-findings.md (sections 5 to 7). The
+// home page carries the whole story tray as JSON, while the tray itself only
+// renders the 12 to 18 rings near its visible part. Nothing in this section
+// touches the page, the file system or the database, so tests/stories-test.js
+// loads it directly.
+
+const STORY_TRAY_KEY = '{"xdt_api__v1__feed__reels_tray"';
+const STORY_USERNAME_RE = /^[A-Za-z0-9._]+$/;
+
+/** Extract the tray array from the text of the home page's tray <script>. Returns null if absent. */
+function parseTrayJson(scriptText) {
+  if (typeof scriptText !== 'string') return null;
+  const start = scriptText.indexOf(STORY_TRAY_KEY);
+  if (start < 0) return null;
+
+  // Walk to the brace that closes the object, skipping the contents of JSON
+  // strings, which can hold braces and escaped quotes.
+  let depth = 0, inStr = false, esc = false, end = -1;
+  for (let i = start; i < scriptText.length; i++) {
+    const c = scriptText[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+  }
+  if (end < 0) return null;
+
+  let tray;
+  try {
+    const obj = JSON.parse(scriptText.slice(start, end));
+    tray = obj.xdt_api__v1__feed__reels_tray && obj.xdt_api__v1__feed__reels_tray.tray;
+  } catch (_) { return null; }
+  if (!Array.isArray(tray)) return null;
+
+  return tray
+    .filter((e) => e && e.user && typeof e.user.username === 'string')
+    .map((e) => ({
+      username: e.user.username,
+      rank: e.ranked_position,
+      muted: !!e.muted,
+      unseen: e.seen < e.latest_reel_media,
+      // Some frames already watched: the viewer opens at the first unwatched
+      // frame, so the total frame count says nothing about what is left.
+      partlySeen: e.seen > 0,
+      expiresAt: e.expiring_at,
+      reelType: e.reel_type,
+    }));
+}
+
+/**
+ * First entry by rank that is not muted, unseen, a user reel, alive for
+ * STORY_MIN_LIFETIME_S, and not in `watched` (anything with has(), holding
+ * lowercased usernames).
+ */
+function pickStoryTarget(entries, watched, nowSec) {
+  if (!Array.isArray(entries)) return null;
+  const ok = entries.filter((e) =>
+    STORY_USERNAME_RE.test(e.username) &&
+    Number.isFinite(e.rank) && e.rank >= 1 &&
+    !e.muted && e.unseen && e.reelType === 'user_reel' &&
+    Number.isFinite(e.expiresAt) && e.expiresAt > nowSec + STORY_MIN_LIFETIME_S &&
+    !watched.has(e.username.toLowerCase()));
+  ok.sort((a, b) => a.rank - b.rank);
+  return ok[0] || null;
+}
+
+/** Tray Next clicks needed before the ring for `rank` is on screen. */
+function nextClicksFor(rank) {
+  return Math.ceil(Math.max(0, (rank - 1) * STORY_RING_PITCH_PX - STORY_VISIBLE_PX) / STORY_TRAY_NEXT_PX);
+}
+
+/** Username from a viewer URL, or null. Handles /stories/<u>/, /stories/<u>/<id>/ and ?r=1. */
+function storyUserFromUrl(url) {
+  const m = /\/stories\/([^/?#]+)\//.exec(String(url || ''));
+  return m ? m[1] : null;
+}
+
+/**
+ * Drop entries older than STORY_REMEMBER_MS. Input and output:
+ * { username: watchedAtMs }, usernames lowercased on the way.
+ */
+function pruneWatched(map, nowMs) {
+  const out = {};
+  if (!map || typeof map !== 'object' || Array.isArray(map)) return out;
+  for (const [u, t] of Object.entries(map)) {
+    if (Number.isFinite(t) && nowMs - t < STORY_REMEMBER_MS) out[u.toLowerCase()] = t;
+  }
+  return out;
+}
+
+/** "Story by <u>, not seen" into { username, seen }, or null. Used only by the label fallback. */
+function parseRingLabel(label) {
+  const m = /^Story by (.+), (not seen|seen)$/.exec(String(label || ''));
+  return m ? { username: m[1], seen: m[2] === 'seen' } : null;
+}
+
+// --------------------------------------------------------------- stories: browser
+//
+// The only clicks here are on a tray ring and on the tray's Next button. In the
+// viewer only ArrowRight and Escape are pressed. The feed stays in the DOM under
+// the viewer with hidden Like buttons, so nothing in the viewer is ever clicked:
+// a story Like sends the author a notification.
+
+const STORY_TRAY_READY = 'div[role="presentation"] ul li canvas';
+const STORY_TRAY_SCROLLER = 'div[role="presentation"]:has(ul li canvas)';
+// Scoped: the page has two other button[aria-label="Next"] in feed carousels.
+const STORY_TRAY_NEXT = 'div:has(> div[role="presentation"] ul li canvas) > button[aria-label="Next"]';
+// The first li of the tray's ul is a 1 px spacer with no button, so rings are
+// always selected through their div[role="button"].
+const STORY_RING_ANY = 'ul li div[role="button"][aria-label^="Story by "]';
+const storyRingSel = (username) => `ul li div[role="button"][aria-label^="Story by ${username},"]`;
+
+let storyWatched = null;          // Map username -> watchedAtMs, loaded on first use
+let storyLabelFallbackWarned = false;
+
+/** The watched map, loaded from STORY_STATE_FILE on first use and pruned on every call. */
+function storyWatchedMap() {
+  if (!storyWatched) {
+    let raw = {};
+    try {
+      if (fs.existsSync(STORY_STATE_FILE)) raw = JSON.parse(fs.readFileSync(STORY_STATE_FILE, 'utf8'));
+    } catch (e) {
+      // Kept aside rather than overwritten by the next write, so it can be looked at.
+      const bad = `${STORY_STATE_FILE}.bad`;
+      try { fs.renameSync(STORY_STATE_FILE, bad); } catch (_) { /* reported below either way */ }
+      log('WARN', `could not read ${path.basename(STORY_STATE_FILE)} (moved to ${path.basename(bad)}), ` +
+                  `starting with no watched accounts: ${e.message}`);
+      raw = {};
+    }
+    storyWatched = new Map(Object.entries(pruneWatched(raw, Date.now())));
+  } else {
+    storyWatched = new Map(Object.entries(pruneWatched(Object.fromEntries(storyWatched), Date.now())));
+  }
+  return storyWatched;
+}
+
+/**
+ * Remember an account as watched, in memory and in STORY_STATE_FILE. A write
+ * error is logged and ignored; the map in memory still prevents repeats for
+ * this run.
+ */
+function storyRemember(username) {
+  const m = storyWatchedMap();
+  m.set(username.toLowerCase(), Date.now());
+  const tmp = `${STORY_STATE_FILE}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(m), null, 1));
+    fs.renameSync(tmp, STORY_STATE_FILE);
+  } catch (e) {
+    log('WARN', `could not write ${path.basename(STORY_STATE_FILE)}: ${e.message}`);
+  }
+}
+
+/** Runs in the page: the text of the tray <script>, or null. */
+function storyTrayScriptText() {
+  const s = [...document.querySelectorAll('script[type="application/json"]')]
+    .find((x) => x.textContent.includes('xdt_api__v1__feed__reels_tray'));
+  return s ? s.textContent : null;
+}
+
+/**
+ * Runs in the page: the number of frames of the open story, from its progress
+ * bar, or null. The bar is the first div in the frame column that is 1 to 3 px
+ * tall and whose children are all at most 3 px tall, one child per frame.
+ */
+function storyFrameCountIn(username) {
+  const hdr = [...document.querySelectorAll(`a[href="/${username}/"]`)]
+    .find((a) => { const r = a.getBoundingClientRect(); return r.width > 0 && r.height > 0; });
+  if (!hdr) return null;
+  let col = hdr;
+  while (col && col.getBoundingClientRect().height < 300) col = col.parentElement;
+  if (!col) return null;
+  const bar = [...col.querySelectorAll('div')].find((d) => {
+    const r = d.getBoundingClientRect();
+    return r.height >= 1 && r.height <= 3 && d.children.length > 0 &&
+      [...d.children].every((c) => c.getBoundingClientRect().height <= 3);
+  });
+  return bar ? bar.children.length : null;
+}
+
+/** The tray entries from the home page's embedded data, or null. */
+async function readTray(page) {
+  const text = await page.evaluate(storyTrayScriptText).catch(() => null);
+  return text ? parseTrayJson(text) : null;
+}
+
+/** Frames of the open story for `username`, or null. */
+async function countFrames(page, username) {
+  const n = await page.evaluate(storyFrameCountIn, username).catch(() => null);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** True when the ring sits inside the tray's visible area. */
+async function ringOnScreen(page, ring) {
+  const box = await ring.boundingBox().catch(() => null);
+  const tray = await page.locator(STORY_TRAY_SCROLLER).first().boundingBox().catch(() => null);
+  return !!(box && tray && box.width > 0 &&
+    box.x >= tray.x - 1 && box.x + box.width <= tray.x + tray.width + 1);
+}
+
+/** Click the tray Next button once, if it is there. False at the end of the list. */
+async function clickTrayNext(page) {
+  const next = page.locator(STORY_TRAY_NEXT);
+  if (await next.count() === 0) return false;
+  await next.first().click();
+  await sleep(rand(800, 2000));
+  return true;
+}
+
+/**
+ * Click the tray Next button until the ring of `username` is on screen.
+ * nextClicksFor(rank) is only a hint, because the pixel geometry was measured at
+ * one window size: up to 2 more clicks are allowed, never more than
+ * STORY_NEXT_CLICKS_MAX. Returns the ring locator if it is visible afterwards,
+ * otherwise null.
+ */
+async function bringRingIntoView(page, rank, username) {
+  const ring = page.locator(storyRingSel(username)).first();
+  if (await ringOnScreen(page, ring)) return ring;
+  const clicks = Math.min(nextClicksFor(rank) + 2, STORY_NEXT_CLICKS_MAX);
+  for (let i = 0; i < clicks; i++) {
+    if (!(await clickTrayNext(page))) break;
+    if (await ringOnScreen(page, ring)) return ring;
+  }
+  return (await ring.isVisible().catch(() => false)) ? ring : null;
+}
+
+/**
+ * Fallback when the tray data is missing: the first rendered ring labelled
+ * "not seen" whose account is not in `watched`, clicking the tray Next button
+ * until one renders. Labels are English UI text and muted accounts read "seen",
+ * so this is weaker than the data. Returns a username or null.
+ */
+async function pickRingByLabel(page, watched) {
+  for (let clicks = 0; ; clicks++) {
+    const labels = await page.locator(STORY_RING_ANY)
+      .evaluateAll((els) => els.map((el) => el.getAttribute('aria-label'))).catch(() => []);
+    for (const label of labels) {
+      const r = parseRingLabel(label);
+      if (r && !r.seen && STORY_USERNAME_RE.test(r.username) && !watched.has(r.username.toLowerCase())) return r.username;
+    }
+    if (clicks >= STORY_NEXT_CLICKS_MAX) return null;
+    if (!(await clickTrayNext(page))) return null;
+  }
+}
+
+/** Time on one frame: --story-seconds when given, otherwise 3 to 7 s. */
+function storyDwellMs() {
+  return STORY_SECONDS_RANGE
+    ? rand(STORY_SECONDS_RANGE[0] * 1000, STORY_SECONDS_RANGE[1] * 1000)
+    : rand(3000, 7000);
+}
+
+/** Leave the viewer with Escape and make sure the home page is loaded. */
+async function leaveViewer(page) {
+  await page.keyboard.press('Escape').catch(() => {});
+  const home = await page.waitForURL(IG_URL, { timeout: 5000, waitUntil: 'commit' }).then(() => true).catch(() => false);
+  if (!home || page.url() !== IG_URL) await page.goto(IG_URL, { waitUntil: 'domcontentloaded' });
+}
+
+/**
+ * Watch one account's stories, an account not watched in the last 24 hours.
+ *
+ * The account comes from the tray data in the home page (all accounts with a
+ * story, in tray order), not from the rendered rings. Its ring is brought into
+ * view with the tray Next button and clicked; the viewer is then driven with
+ * ArrowRight and Escape only. The account is remembered the moment its ring is
+ * clicked, because leaving after a few frames keeps the ring "not seen".
+ *
+ * Returns { opened, watched, user, frames, expired, source }. `opened` is true
+ * when the chosen account's viewer opened. `watched` is the number of frames
+ * the script stepped through, approximate because a frame can also end and
+ * move on by itself.
+ */
+async function watchStories(page) {
+  // Always a full load: the tray data only comes with one, and Escape from the
+  // viewer returns to / without one, so the data could be stale.
+  await page.goto(IG_URL, { waitUntil: 'domcontentloaded' });
+  await page.locator(STORY_TRAY_READY).first().waitFor({ timeout: 15000 }).catch(() => {});
+  await sleep(rand(1500, 3000));
+  if (await isActionBlocked(page)) throw new ActionBlocked('blocked on the home page before stories');
+
+  const watched = storyWatchedMap();
+  const entries = await readTray(page);
+  let target = null;
+  let source = 'tray-data';
+
+  if (entries && entries.length) {
+    target = pickStoryTarget(entries, watched, Date.now() / 1000);
+    if (!target) {
+      log('STORY', `no unwatched unseen stories (${entries.length} in tray, ${watched.size} watched in the last 24 h)`);
+      jlog({ action: 'story', skipped: 'none eligible', tray: entries.length });
+      return { opened: false, watched: 0 };
+    }
+  } else {
+    source = 'labels';
+    if (!storyLabelFallbackWarned) {
+      log('WARN', 'STORY tray data not found in the page, using ring labels');
+      storyLabelFallbackWarned = true;
+    }
+  }
+
+  try {
+    let ring;
+    if (target) {
+      ring = await bringRingIntoView(page, target.rank, target.username);
+      if (!ring) {
+        log('WARN', `STORY ring for @${target.username} (rank ${target.rank}) did not come into view`);
+        await shot(page, 'story-ring-missing');
+        watched.set(target.username.toLowerCase(), Date.now());   // not retried this run
+        return { opened: false, watched: 0 };
+      }
+    } else {
+      const username = await pickRingByLabel(page, watched);
+      if (!username) {
+        log('STORY', 'no unwatched "not seen" ring in the tray');
+        jlog({ action: 'story', skipped: 'none eligible', source });
+        return { opened: false, watched: 0 };
+      }
+      target = { username, rank: null, partlySeen: null };
+      ring = page.locator(storyRingSel(username)).first();
+    }
+
+    await ring.click();
+    storyRemember(target.username);
+
+    // 'commit': opening the viewer is an in-app navigation, which may fire no load event.
+    await page.waitForURL(/\/stories\//, { timeout: 10000, waitUntil: 'commit' });
+    await sleep(rand(1500, 2500));
+
+    if ((await page.title().catch(() => '')).startsWith("Page couldn't load")) {
+      log('STORY', `@${target.username}'s story expired after the page loaded`);
+      jlog({ action: 'story', user: target.username, skipped: 'expired', source });
+      await page.goto(IG_URL, { waitUntil: 'domcontentloaded' });
+      return { opened: false, watched: 0, expired: true };
+    }
+
+    const u = storyUserFromUrl(page.url());
+    if (u !== target.username) {
+      // The account on screen got a view too, so it is remembered as well.
+      if (u && STORY_USERNAME_RE.test(u)) storyRemember(u);
+      log('WARN', `STORY expected @${target.username} but the viewer shows ${u ? '@' + u : page.url()}`);
+      jlog({ action: 'story', user: target.username, observed: u, skipped: 'wrong account', source });
+      await leaveViewer(page);
+      return { opened: false, watched: 0 };
+    }
+
+    const frames = await countFrames(page, u);
+    // One frame only unless the data says no frame of this account has been
+    // watched yet (then the viewer starts at frame 1 and `frames` is what is
+    // left), and only when the frames could be counted. ArrowRight on an
+    // account's last frame moves to the next account, which is often an ad.
+    const toWatch = frames && target.partlySeen === false
+      ? Math.min(frames, randInt(STORY_SESSION_RANGE[0], STORY_SESSION_RANGE[1]))
+      : 1;
+
+    // The URL is checked before each ArrowRight (a frame can end and move on by
+    // itself) and right after it, so time on another account or an ad stays
+    // under a second.
+    let n = 1;
+    await sleep(storyDwellMs());
+    while (n < toWatch && storyUserFromUrl(page.url()) === u) {
+      await page.keyboard.press('ArrowRight');
+      await sleep(rand(600, 1000));
+      if (storyUserFromUrl(page.url()) !== u) break;
+      n++;
+      await sleep(storyDwellMs());
+    }
+
+    await leaveViewer(page);
+
+    const rankText = target.rank ? `rank ${target.rank} of ${entries.length}` : 'from the ring labels';
+    log('STORY', `watched ${n} of ${frames || '?'} frames from @${u} (${rankText})`);
+    jlog({ action: 'story', user: u, rank: target.rank, trayCount: entries ? entries.length : null,
+           frames, watched: n, source });
+    return { opened: true, watched: n, user: u, frames, source };
+  } catch (e) {
+    if (!(e instanceof ActionBlocked)) {
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.goto(IG_URL, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    }
+    throw e;
+  }
 }
 
 // -------------------------------------------------------- chrome plumbing
@@ -2016,9 +2377,10 @@ async function main() {
   if (eligible !== null) console.log(`Eligible:  ${eligible} accounts match right now`);
   if (MAX_MINUTES > 0) console.log(`Stop after ${MAX_MINUTES} minutes, whichever comes first`);
   console.log(`Warm-up:   ${NO_WARMUP ? 'disabled (--no-warmup)' : '2 to 4 browsing actions before the first follow'}`);
-  console.log(`Stories:   up to ${STORIES_RANGE[0]}-${STORIES_RANGE[1]} sessions/hour, ` +
-              `${STORY_SESSION_RANGE[0]}-${STORY_SESSION_RANGE[1]} per session, ` +
-              (STORY_SECONDS_RANGE ? `${STORY_SECONDS_RANGE[0]}-${STORY_SECONDS_RANGE[1]} s each` : '2.5-6 s each'));
+  console.log(`Stories:   up to ${STORIES_RANGE[0]}-${STORIES_RANGE[1]} sessions/hour, one account each, ` +
+              `${STORY_SESSION_RANGE[0]}-${STORY_SESSION_RANGE[1]} frames per account, ` +
+              (STORY_SECONDS_RANGE ? `${STORY_SECONDS_RANGE[0]}-${STORY_SECONDS_RANGE[1]} s each` : '3-7 s each') +
+              `, no account twice in 24 h`);
   console.log(`Fillers:   up to ${LIKES_RANGE[0]}-${LIKES_RANGE[1]} likes and ${READS_RANGE[0]}-${READS_RANGE[1]} comment reads per hour`);
   // Profile likes need the tables the web app's migrate action creates.
   // Checked even with --no-profile-likes: feed likes and new follows record into
@@ -2056,6 +2418,22 @@ async function main() {
     } catch (e) {
       if (e instanceof ActionBlocked) { log('STOP', e.message); code = 2; }
       else { log('FAIL', e.message); await shot(page, 'plike-once-fatal'); code = 1; }
+    }
+    if (pool) await pool.end().catch(() => {});
+    await close().catch(() => {});
+    process.exit(code);
+  }
+
+  if (STORY_ONCE) {
+    let code = 0;
+    try {
+      const r = await watchStories(page);
+      log('STORY', r.opened ? `done, ${r.watched} frame(s) from @${r.user}` : 'done, no story watched');
+      jlog({ action: 'summary', mode: 'story-once', watched: !!r.opened, user: r.user || null });
+      if (!r.opened) code = 1;
+    } catch (e) {
+      if (e instanceof ActionBlocked) { log('STOP', e.message); code = 2; }
+      else { log('FAIL', e.message); await shot(page, 'story-once-fatal'); code = 1; }
     }
     if (pool) await pool.end().catch(() => {});
     await close().catch(() => {});

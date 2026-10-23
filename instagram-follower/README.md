@@ -27,13 +27,15 @@ values are seconds, and the minimum must stay below the maximum.
 
 Also add `--stories-per-hour 15-25 --stories-per-session 3-6 --story-seconds 5-12` (2026-10-21), so the
 longer waits are spent watching stories in the home tray: up to 15 to 25 story sessions an hour,
-3 to 6 stories each, 5 to 12 seconds per story. That is at most about 4 to 30 minutes of stories an
-hour; the hourly number is a ceiling the run works towards, not a promise, because each filler
-action is picked at random. These are brief views: Instagram moves to the next story by itself, so
-the seconds are the time between the script's own advances. The right arrow can roll on into the
-next account's stories, and the tray is mostly, but not guaranteed to be, accounts we follow. Watching
-stories is passive but still shows up as views from the account; nothing here guarantees a safe
-number.
+each one account, 3 to 6 frames from it, 5 to 12 seconds per frame. That is at most about 4 to 30
+minutes of stories an hour; the hourly number is a ceiling the run works towards, not a promise,
+because each filler action is picked at random. Since 2026-10-22 each session is a different
+account, chosen from every account in the tray (130 on 2026-10-22, not just the 12 to 18 rings
+on screen), and an account watched once is left alone for 24 hours (`story-watched.json`), even if
+it posts a new story in that time. Fewer frames are watched when the account has fewer, and only one
+when some of its frames were already watched. The tray holds the accounts we follow that have a
+story. Watching stories is passive but still shows up as views from the account; nothing here
+guarantees a safe number.
 
 ### Follows per day while ramping up
 
@@ -81,6 +83,15 @@ node instagram-follower.js --only "user1,user2,user3" --follows 3 --no-warmup --
 ```
 
 Add `--dry-run` to click nothing and write nothing.
+
+To check the story action on its own: one story session from the tray, then exit. No follows.
+
+```powershell
+node instagram-follower.js --story-once --no-warmup
+```
+
+It watches a real story, also with `--dry-run`, and records the account in `story-watched.json`, so
+running it three times watches three different accounts.
 
 ### Profile likes (added 2026-10-15)
 
@@ -145,7 +156,7 @@ runs on its cooldown and the profile like on its own pacing; the other four fill
 
 | # | Action | What it does |
 |---|---|---|
-| 1 | Watch stories | Opens the first unseen ring in the story tray on the home feed, watches 1 to 3 stories (`--stories-per-session`), advancing with the right arrow every 2.5 to 6 s (`--story-seconds`), exits with Escape. An empty tray uses up the attempt but is not counted as watched. |
+| 1 | Watch stories | Rebuilt 2026-10-22. Reloads the home page and reads the full story tray from the JSON the page carries (every followed account with a story, not just the rings on screen). Picks the first account in tray order that is unseen, not muted, not expiring within 5 minutes and not watched in the last 24 hours (`story-watched.json`). Clicks the tray's Next button until that account's ring is on screen, clicks the ring, checks the viewer shows that account, watches 1 to 3 of its frames (`--stories-per-session`, capped at the frames it has; one frame if some were already watched or the frames cannot be counted), 3 to 7 s each (`--story-seconds`), advancing with the right arrow and stopping at once if the viewer moves on to another account or an ad, then Escape. Keyboard only in the viewer: the only clicks are the ring and the tray's Next button. If the tray JSON is missing, it falls back to the first ring labelled `not seen`. An attempt with nothing to watch uses up the attempt but is not counted. |
 | 2 | Scroll the feed | Scrolls the home feed in variable increments with variable pauses, sometimes scrolling back up. |
 | 3 | Like a post | Picks a random post currently in the feed viewport, reads the like button's `aria-label`, and clicks only if it reads "Like" rather than "Unlike". Already-liked posts are skipped, never toggled off. |
 | 4 | Read comments | Opens a profile from the feed, opens one of its posts, scrolls the comment list, closes the post, returns to the feed. No comment text is stored. This is dwell time only. |
@@ -163,7 +174,7 @@ failed follow starts the same cooldown as a successful one.
 | Follow cooldown | 180 to 300 s, uniform random | `--cooldown-min` / `--cooldown-max` |
 | Follows per run | 100 | `--follows` |
 | Likes | 5 to 10 per hour | `--likes-per-hour` |
-| Story sessions | 5 to 15 per hour, 1 to 3 stories each, 2.5 to 6 s apart | `--stories-per-hour`, `--stories-per-session`, `--story-seconds` |
+| Story sessions | 5 to 15 per hour, one account each, 1 to 3 of its frames, 3 to 7 s per frame; no account twice in 24 hours | `--stories-per-hour`, `--stories-per-session`, `--story-seconds` |
 | Comment reads | 3 to 6 per hour | `--reads-per-hour` |
 | Profile likes | 1 to 2 per hour, at least 20 min apart, at most 15 per run | `--profile-likes-per-hour`, `--no-profile-likes` |
 | All likes together | at most 10 per hour (feed and profile) | none, `TOTAL_LIKES_PER_HOUR_MAX` in the script |
@@ -549,7 +560,7 @@ server.
 
 | File | Purpose |
 |---|---|
-| `instagram-follower.js` | The automation. Node + Playwright, about 2,130 lines. |
+| `instagram-follower.js` | The automation. Node + Playwright, about 2,600 lines. |
 | `package.json` | Pins playwright, mysql2 and dotenv. `npm run login` / `dry-run` / `follow`. |
 | `.env` | Remote database name, user and password, and the SSH tunnel settings. Copied from `.env.example`. Gitignored. |
 | `.env.example` | Template, with every setting explained and the command that reads the database values from the VPS. |
@@ -558,6 +569,10 @@ server.
 | `tests/remote-db-guard-test.js` | Tests for the machine guard, the SSH tunnel, the server identity guard and the startup refusals. `node tests/remote-db-guard-test.js`. On a non-Windows machine the startup checks confirm the machine guard stops the script; the settings refusals are checked when it runs on the PC. |
 | `tests/profile-likes-test.js` | Tests for the profile-likes action: the pure helpers, the pacing over 12 simulated hours, and `likeFromProfile` against a fake page and a fake database (already-liked posts, pending, accepted and declined requests, a like that does not register, an action block, a dry run). `node tests/profile-likes-test.js`. |
 | `profile-likes-progress.md` | Plan, decisions and progress for the profile-likes action. |
+| `story-watched.json` | Accounts whose stories were watched in the last 24 hours, with the time. Written when a ring is clicked, read at the first story of a run. Delete it to forget them. A file that cannot be read is renamed to `story-watched.json.bad`. Gitignored. |
+| `tests/stories-test.js` | Tests for the story action: the tray JSON parser, the account choice, the 24-hour memory, and `watchStories` against a fake tray and viewer (Next clicks, expired story, auto-advance, the label fallback, an action block, and a check that nothing but a ring or the tray Next button is ever clicked). `node tests/stories-test.js`. |
+| `story-tray-findings.md` | The 2026-10-22 investigation of the story tray and viewer, the evidence for the story action. Screenshots in `story-tray-findings-screenshots/`. |
+| `story-tray-build-progress.md` | Progress of the 2026-10-22 story rebuild, and every account whose story was opened while building it. |
 | `archive/` | Old versions of the script and the obsolete `follow-targets.csv`. Gitignored, so it stays on this PC only. |
 | `run-log.jsonl` | One JSON line per action, with a New York timestamp and outcome. Check pacing here after a run. |
 | `run-screenshots/` | One screenshot per failure. First place to look when something goes wrong. |
@@ -585,12 +600,13 @@ server.
 | `--check-db` | Open the tunnel, check the server is the VPS, print its hostname, the queue counts and the eligible count, the following-list figures and the profile-likes figures (accounts due, requests due, posts liked), then exit. Opens no browser and writes nothing. |
 | `--likes-per-hour N` or `N-M` | Feed likes per hour, 0 to 60. Default `5-10`. The 10-likes-an-hour total (feed and profile) still applies. Added to the script 2026-10-21; it was documented before but not read. |
 | `--stories-per-hour N` or `N-M` | Story sessions per hour, 0 to 60. Default `5-15`. 0 also keeps stories out of the warm-up. A ceiling, not a target that is always reached. |
-| `--stories-per-session N` or `N-M` | Stories watched in one session before Escape, 1 to 20. Default `1-3`. |
-| `--story-seconds N` or `N-M` | Seconds between the script's advances inside a session, 1 to 60. Without it: 2.5 to 5 s on the first story, 2.5 to 6 s after. Instagram also advances by itself. |
+| `--stories-per-session N` or `N-M` | Frames watched from the one account of a session before Escape, 1 to 20. Default `1-3`. Never more than the account has, and one if some of its frames were already watched. |
+| `--story-seconds N` or `N-M` | Seconds on each frame before the next advance or Escape, 1 to 60. Without it: 3 to 7 s. Instagram also advances by itself. |
 | `--reads-per-hour N` or `N-M` | Comment reads per hour, 0 to 60. Default `3-6`. |
 | `--profile-likes-per-hour N` or `N-M` | Profile likes per hour, drawn afresh each hour. Default `1-2`. The 20-minute gap, the 15-per-run maximum and the 10-likes-an-hour total still apply. |
 | `--no-profile-likes` | Leave profile likes out of this run. Feed likes and follows are still recorded in `ig_post_likes` and `ig_own_following`. |
 | `--profile-like-once` | Test mode: one profile visit (and one like, unless `--dry-run`), then exit. No follows. Exit code 1 if the like did not register, 2 on an action block. |
+| `--story-once` | Test mode: one story session, then exit. No follows. Watches a real story even with `--dry-run`. Exit code 0 if a story was watched, 1 if none was, 2 on an action block. Use with `--no-warmup`. |
 
 **The run is headed by default**, so the window is visible and every action can be watched.
 

@@ -3,6 +3,10 @@ node_modules/
 run-log.jsonl
 run-screenshots/
 pending-writes.jsonl
+# Accounts whose stories were watched in the last 24 hours (watchStories).
+story-watched.json
+story-watched.json.tmp
+story-watched.json.bad
 tests/node_modules/
 
 # Old versions of the script, kept on disk only. Git history replaces them once
